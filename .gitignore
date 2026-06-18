@@ -1,0 +1,11 @@
+# Personal, machine-local Claude Code config — never committed
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Local agent memory (machine-specific)
+.claude/agent-memory-local/
+
+# Secrets
+.env
+.env.*
+*.pem
