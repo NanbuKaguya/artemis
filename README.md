@@ -1,64 +1,59 @@
-# Artemis Agent Work System (AAWS)
+# Artemis Agent Work System (AAWS) — v2
 
-> A top-tier, multi-domain **agent work system** built entirely on Claude Code's native
-> extensibility — turning Claude Code into a coordinated team of senior specialists that
-> can take on work in any field.
+> A **top-tier agent work system** built on Claude Code's native features, designed to
+> surpass standard multi-agent frameworks by addressing the empirically proven failure
+> modes that make most agent systems mediocre.
 
-AAWS is not an external framework or runtime. It's a disciplined arrangement of Claude
-Code's own features — memory, subagents, skills, path-scoped rules, and hooks — assembled
-into one coherent operating model.
+AAWS is not an external framework. It's a disciplined arrangement of Claude Code's own
+features — subagents, skills, memory, rules, and hooks — assembled into an operating
+model grounded in current research (AdaptOrch, MAST, Reflexion, Inspector pattern).
 
-## What it gives you
+## What makes it different
 
-- **An operating model:** *Orchestrate → Delegate → Verify.* The main thread plans work,
-  routes each part to the right specialist, integrates the results, and enforces a quality
-  bar. (`CLAUDE.md`)
-- **A specialist roster:** 12 domain experts — architecture, research, backend, frontend,
-  devops, data/ML, security, QA, review, debugging, docs, and planning. (`.claude/agents/`)
-- **Workflow playbooks** as slash commands: `/plan-work`, `/quality-gate`, `/ship`, plus
-  self-extension forges. (`.claude/skills/`)
-- **Path-scoped rules** that auto-load only when relevant files are touched.
-  (`.claude/rules/`)
-- **Opt-in guardrails:** destructive-command guard + session orientation banner.
-  (`.claude/hooks/`, enabled via `docs/settings.example.json`)
-- **Self-extension:** `/forge-agent` and `/forge-skill` grow the system to cover any field
-  you use it in — every gap becomes a permanent capability.
+Most multi-agent systems fail because of specification ambiguity (41.8%), coordination
+breakdown (36.9%), and verification gaps (21.3%) — not model capability. AAWS addresses
+each of these structurally:
+
+- **Topology-aware orchestration.** Tasks are classified (SOLO / SEQUENTIAL / PARALLEL /
+  HIERARCHICAL) before delegation, matching the coordination pattern to the task structure
+  instead of using one-size-fits-all hub-and-spoke.
+- **Structurally adversarial verification.** The Inspector agent reviews artifacts in a
+  fresh context with an opposing mandate — never same-context self-review. For high-stakes
+  decisions, structured debate (proponent + skeptic + judge).
+- **Explicit I/O contracts on every handoff.** Every agent declares what it receives and
+  returns. No free-form delegation.
+- **Four-tier memory (CoALA model).** Working + Episodic + Semantic + Procedural. The
+  system learns from experience via `/reflect`, which distills episodes into rules.
+- **16 specialists + self-extension.** 12 domain experts, 4 meta-agents (inspector, judge,
+  proponent, skeptic). `/forge-agent` mints new specialists with contracts when gaps appear.
 
 ## Quick start
 
-Open this repo in Claude Code — the system loads automatically. Then:
+Open this repo in Claude Code — the system loads automatically.
 
 ```
-/plan-work <your goal>      # frame the work and assign owners
-/quality-gate               # verify by evidence before declaring done
-/ship                       # commit in house style (push/PR only if you ask)
+/plan-work <goal>              # classify topology → contracted task plan
+/quality-gate                  # adversarial inspection pipeline
+/critical-decision <artifact>  # structured debate for high-stakes
+/reflect                       # distill experience into rules
+/ship                          # commit in house style
 ```
 
-Optionally activate the safety hooks and pre-approved permissions:
+## Evidence base
 
-```bash
-cp docs/settings.example.json .claude/settings.json   # review before activating
-chmod +x .claude/hooks/*.sh
-```
+The architecture is designed against empirical findings:
+
+| Finding | Source | How AAWS addresses it |
+|---|---|---|
+| 41.8% of multi-agent failures = specification problems | MAST (arXiv:2503.13657) | Explicit I/O contracts on every handoff |
+| 96.4% error interception with structural separation | ICML 2025 Inspector pattern | Inspector agent: fresh context, artifact-only |
+| 12–23% gain from dynamic topology routing | AdaptOrch (arXiv:2602.16873) | Mandatory topology classification before planning |
+| +11pp from verbal self-critique stored as memory | Reflexion (arXiv:2303.11366) | Episodic memory + /reflect distillation |
+| Multi-agent debate fails under sycophancy | arXiv:2509.05396 | Strict isolation: proponent/skeptic never see each other |
+| 98.4% of agentic system value is infrastructure | arXiv:2604.14228 | Contracts, rules, hooks — not just agent prompts |
 
 ## Learn more
 
-- **`docs/ARCHITECTURE.md`** — the full design and the five layers.
-- **`docs/GETTING_STARTED.md`** — how to use and extend the system.
-- **`CLAUDE.md`** — the operating constitution that loads every session.
-
-## Extending to new fields
-
-When a task needs expertise no specialist covers, mint one:
-
-```
-/forge-agent <role>      # scaffold a new specialist in the house format
-/forge-skill <workflow>  # capture a repeatable workflow as a new /command
-```
-
-This is how AAWS reaches "all fields": it broadens toward whatever domain it's put to work
-on, and the new capability persists for next time.
-
----
-
-<sub>原 "artemis · 第一个仓库" 已升级为 Artemis Agent Work System。</sub>
+- **`docs/ARCHITECTURE.md`** — full design, six layers, evidence base
+- **`docs/GETTING_STARTED.md`** — usage, specialist roster, file map
+- **`CLAUDE.md`** — the operating constitution loaded every session

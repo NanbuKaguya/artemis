@@ -1,94 +1,119 @@
-# Getting Started with AAWS
+# Getting Started with AAWS v2
 
-This repo *is* the Artemis Agent Work System. Open it in Claude Code and the system loads
-automatically: `CLAUDE.md` becomes the operating constitution, the specialists in
-`.claude/agents/` become available for delegation, the skills in `.claude/skills/` become
-slash commands, and the path-scoped rules activate when you touch matching files.
+Open this repo in Claude Code and the system loads automatically. `CLAUDE.md` becomes
+the operating constitution, specialists become available for delegation, skills become
+slash commands, and path-scoped rules activate when you touch matching files.
 
-## 1. One-time setup (optional but recommended)
+## Quick Start
 
-Activate the safety guardrails and pre-approved permissions by copying the template:
-
-```bash
-cp docs/settings.example.json .claude/settings.json
-chmod +x .claude/hooks/*.sh
-```
-
-Review `.claude/settings.json` first and adjust the `allow`/`deny` lists to your project.
-Nothing in the template runs until you copy it into place — this keeps you in control of
-what the agent is pre-authorized to do.
-
-> Note: the template is provided rather than auto-installed on purpose. Granting an agent
-> standing permissions is a decision you should make explicitly.
-
-## 2. Daily use — the loop
-
-For anything non-trivial, drive the core loop:
+For any non-trivial task:
 
 ```
-/plan-work <your goal>      → get a framed plan with task→owner assignments
-                            → (Orchestrator delegates to specialists)
-/quality-gate               → verify by evidence before declaring done
+/plan-work <your goal>      → classify topology, build contracted task plan
+                            → orchestrator delegates to specialists per topology
+/quality-gate               → adversarial inspection (Inspector in fresh context)
 /ship                       → commit in house style (push/PR only if you ask)
 ```
 
-For a quick, single-step task you already know how to do, just ask directly — delegation
-is for research-heavy, multi-file, or parallelizable work.
-
-## 3. The specialists
-
-Delegation is automatic: describe a task and the Orchestrator routes it to the right
-specialist based on each agent's `description`. You can also request one explicitly, e.g.
-"have the **security-auditor** review the auth changes."
-
-| Agent | Owns |
-|---|---|
-| `orchestrator-planner` | Decomposing large/ambiguous work into a plan |
-| `solution-architect` | Architecture, trade-offs, design docs |
-| `deep-researcher` | Multi-source, cited investigation |
-| `backend-engineer` | APIs, services, data, business logic |
-| `frontend-engineer` | UI, components, client state, a11y |
-| `devops-engineer` | CI/CD, IaC, containers, deploys, observability |
-| `data-scientist` | Analysis, modeling, evaluation, pipelines |
-| `security-auditor` | Threat modeling, vuln review, hardening |
-| `qa-test-engineer` | Test strategy and authoring |
-| `code-reviewer` | Diff review for bugs and cleanup |
-| `debugger` | Root-cause analysis of failures |
-| `technical-writer` | Docs, guides, explanations |
-
-## 4. Extending the system to new fields
-
-When work needs expertise no specialist covers:
+For high-stakes decisions:
 
 ```
-/forge-agent <role>     → scaffolds a new specialist in the house format and
-                          registers it in CLAUDE.md
-/forge-skill <workflow> → captures a repeatable workflow as a new /command
+/critical-decision <artifact>  → proponent + skeptic + judge structured debate
 ```
 
-This is the mechanism by which AAWS reaches "all fields": every gap you hit becomes a
-permanent capability of the system.
-
-## 5. Where things live
+For system learning:
 
 ```
-CLAUDE.md                     # constitution (loads every session)
-docs/ARCHITECTURE.md          # full design
-docs/GETTING_STARTED.md       # this file
-docs/settings.example.json    # opt-in permissions + hooks template
+/reflect                    → distill episodes into rules, prune low-signal
+```
+
+## The Core Loop
+
+Every non-trivial request follows this sequence:
+
+1. **Classify topology** — SOLO / SEQUENTIAL / PARALLEL-FANOUT / HIERARCHICAL
+2. **Plan with contracts** — each task gets an owner, context brief, and I/O contract
+3. **Delegate per topology** — parallel for independent tasks, sequential for dependent
+4. **Inspect adversarially** — Inspector in fresh context with artifact-only input
+5. **Learn** — write episode for failures/surprises; `/reflect` to distill
+
+## The Specialists (16 agents)
+
+| Agent | Domain | Model |
+|---|---|---|
+| `orchestrator-planner` | Strategy, decomposition, topology classification | opus |
+| `solution-architect` | System design, trade-offs, design docs | opus |
+| `deep-researcher` | Multi-source investigation, cited findings | sonnet |
+| `backend-engineer` | APIs, services, databases, business logic | sonnet |
+| `frontend-engineer` | UI, components, client state, accessibility | sonnet |
+| `devops-engineer` | CI/CD, IaC, containers, deployment | sonnet |
+| `data-scientist` | Analysis, modeling, evaluation, pipelines | sonnet |
+| `security-auditor` | Threat modeling, vuln review, hardening | opus |
+| `qa-test-engineer` | Test strategy, test authoring, coverage | sonnet |
+| `code-reviewer` | Diff review for correctness and cleanup | opus |
+| `debugger` | Root-cause analysis of failures | opus |
+| `technical-writer` | Docs, guides, explanations | sonnet |
+| `inspector` | Adversarial artifact verification | opus |
+| `consensus-judge` | Multi-agent arbitration | opus |
+| `proponent` | Advocate FOR in structured debate | sonnet |
+| `skeptic` | Advocate AGAINST in structured debate | sonnet |
+
+## Memory Architecture
+
+Four tiers, each with a distinct role:
+
+- **Working** — current context window (ephemeral)
+- **Episodic** — `.claude/memory/episodes/` — records of past work with lessons learned
+- **Semantic** — `CLAUDE.md`, `.claude/rules/` — distilled facts and conventions
+- **Procedural** — `.claude/skills/`, `.claude/agents/` — executable workflows
+
+Memory flows upward: episodes are raw evidence → `/reflect` distills them into rules
+and skill improvements → the system gets better at its job over time.
+
+## Extending the System
+
+```
+/forge-agent <role>      → new specialist with I/O contracts
+/forge-skill <workflow>  → new playbook as a slash command
+```
+
+Every gap becomes a permanent capability. New agents MUST include I/O contracts.
+
+## Where Things Live
+
+```
+CLAUDE.md                          # constitution (loads every session)
 .claude/
-  agents/                     # specialist subagents
-  skills/                     # workflow playbooks (/commands)
-  rules/                      # path-scoped guidance
-  hooks/                      # safety scripts (inert until wired in settings)
+  agents/                          # 16 specialist subagents with I/O contracts
+  skills/
+    plan-work/                     # topology-aware planning
+    quality-gate/                  # adversarial inspection pipeline
+    critical-decision/             # structured debate for high-stakes
+    reflect/                       # episodic memory distillation
+    ship/                          # commit and deliver
+    forge-agent/                   # scaffold new specialists
+    forge-skill/                   # scaffold new playbooks
+  rules/
+    handoff-contracts.md           # standard delegation/response formats
+    episode-format.md              # episode record template
+    engineering-baseline.md        # source code conventions
+    tests.md                       # testing conventions
+  memory/
+    episodes/                      # episodic memory store
+  hooks/
+    guard-destructive.sh           # blocks dangerous commands (opt-in)
+    session-banner.sh              # session orientation (opt-in)
+docs/
+  ARCHITECTURE.md                  # full design with evidence base
+  GETTING_STARTED.md               # this file
+  settings.example.json            # opt-in permissions + hooks template
 ```
 
-## 6. Customizing
+## Activating Optional Guardrails
 
-- **Project facts** the agent should always know → add to `CLAUDE.md`.
-- **Path-specific conventions** (e.g. a particular module's rules) → add a file in
-  `.claude/rules/` with a `paths:` glob.
-- **Personal, uncommitted notes** → `CLAUDE.local.md` (gitignored).
-- **Tune a specialist** → edit its file in `.claude/agents/`.
+```bash
+cp docs/settings.example.json .claude/settings.json   # review before activating
+chmod +x .claude/hooks/*.sh
+```
 
-Keep everything in the established house style so the system stays coherent as it grows.
+Review the template first. Nothing runs until you copy it into place.

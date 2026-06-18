@@ -1,91 +1,139 @@
-# AAWS Architecture
+# AAWS Architecture — v2
 
-The Artemis Agent Work System (AAWS) is an operating model built entirely on Claude Code's
-native extensibility. There is no external runtime — the "system" is a disciplined
-arrangement of memory, subagents, skills, rules, and hooks that together make Claude Code
-behave like a coordinated team of senior specialists.
+The Artemis Agent Work System is an operating model built entirely on Claude Code's
+native extensibility. There is no external runtime. The system is a disciplined
+arrangement of memory, subagents, skills, rules, and hooks that makes Claude Code
+behave like a coordinated team of senior specialists with structural verification.
 
-## Design goals
+## Design Principles
 
-1. **Top-tier output in every field** — domain depth comes from specialist subagents, each
-   encoding how an expert in that field actually works.
-2. **Scales to all fields** — when a domain isn't covered, the system mints a new
-   specialist (`/forge-agent`) in a consistent house format. Coverage grows over time.
-3. **Quality is enforced, not hoped for** — a verification gate and review specialists sit
-   between "implemented" and "done."
-4. **Lean context** — the main thread orchestrates and delegates; specialists absorb the
-   heavy reading so the primary conversation stays sharp.
-5. **Safe by default** — least-privilege tools, destructive-command guards, and explicit
-   confirmation for irreversible actions.
+1. **Harness over model.** 98.4% of an agentic system's value is infrastructure:
+   routing, contracts, verification, context management. The model is table stakes;
+   the harness is the differentiator.
+   *(Source: arXiv:2604.14228 — reverse engineering of Claude Code architecture)*
 
-## The five layers
+2. **Specification quality is the highest-leverage investment.** 41.8% of multi-agent
+   failures are specification/coordination problems. Every handoff has an explicit I/O
+   contract. Free-form delegation is the system's dominant failure mode.
+   *(Source: arXiv:2503.13657 — MAST failure taxonomy, 1,642 traces)*
+
+3. **Verification must be structurally separated from generation.** An agent reviewing
+   its own output in the same context is ineffective. The Inspector receives only the
+   artifact, never the context that produced it.
+   *(Source: ICML 2025 Inspector pattern — 96.4% error interception)*
+
+4. **Topology selection is a first-class decision.** Different tasks need different
+   coordination patterns. Fixed hub-and-spoke costs 12–23% vs. dynamic topology.
+   *(Source: arXiv:2602.16873 — AdaptOrch)*
+
+5. **Systems must learn from experience.** Reflexion: storing verbal self-critiques
+   after failures yields +11pp on HumanEval. Removing the critique step eliminates all
+   gain. The verbal reflection is load-bearing.
+   *(Source: arXiv:2303.11366 — Reflexion)*
+
+6. **Use multi-agent selectively, not by default.** Under equal token budgets, single
+   agents outperform multi-agent on multi-hop reasoning. Multi-agent is justified when
+   task structure demands parallel execution, adversarial verification, or domain depth.
+   *(Source: arXiv:2604.02460)*
+
+## The Six Layers
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│ 1. CONSTITUTION  — CLAUDE.md                                       │
-│    Operating model (Orchestrate→Delegate→Verify), roster, quality  │
-│    bar, conventions. Loads every session.                          │
-├──────────────────────────────────────────────────────────────────┤
-│ 2. SPECIALISTS  — .claude/agents/*.md                              │
-│    Domain experts the Orchestrator delegates to. Routed by their   │
-│    `description`. Least-privilege tools; opus for reasoning, sonnet │
-│    for implementation.                                             │
-├──────────────────────────────────────────────────────────────────┤
-│ 3. PLAYBOOKS  — .claude/skills/<name>/SKILL.md                     │
-│    Repeatable workflows invoked as /commands: plan, gate, ship,    │
-│    and the self-extension forges.                                  │
-├──────────────────────────────────────────────────────────────────┤
-│ 4. RULES  — .claude/rules/*.md                                     │
-│    Path-scoped guidance that auto-loads only when matching files   │
-│    are in play (source baseline, testing rules).                   │
-├──────────────────────────────────────────────────────────────────┤
-│ 5. GUARDRAILS  — .claude/hooks/*.sh + settings (opt-in template)   │
-│    Deterministic safety: destructive-command guard, session        │
-│    orientation banner.                                             │
-└──────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│ 1. CONSTITUTION  — CLAUDE.md                                      │
+│    Core loop (Classify → Orchestrate → Inspect → Learn), topology │
+│    table, memory architecture, quality bar, conventions.          │
+├───────────────────────────────────────────────────────────────────┤
+│ 2. SPECIALISTS  — .claude/agents/*.md                             │
+│    16 domain experts + meta-agents. Each has explicit I/O         │
+│    contracts. Tools are least-privilege. Opus for reasoning,      │
+│    sonnet for implementation.                                     │
+├───────────────────────────────────────────────────────────────────┤
+│ 3. PLAYBOOKS  — .claude/skills/<name>/SKILL.md                    │
+│    Topology-aware planning, adversarial quality gate, structured  │
+│    debate, episodic reflection, self-extension forges.            │
+├───────────────────────────────────────────────────────────────────┤
+│ 4. MEMORY  — four-tier CoALA model                                │
+│    Working (context) → Episodic (.claude/memory/episodes/) →      │
+│    Semantic (CLAUDE.md, .claude/rules/) →                         │
+│    Procedural (.claude/skills/, .claude/agents/)                  │
+├───────────────────────────────────────────────────────────────────┤
+│ 5. RULES  — .claude/rules/*.md                                    │
+│    Path-scoped guidance that auto-loads when matching files are    │
+│    active. Handoff contract standard, episode format, engineering  │
+│    baseline, testing rules.                                       │
+├───────────────────────────────────────────────────────────────────┤
+│ 6. GUARDRAILS  — .claude/hooks/*.sh + settings template           │
+│    Destructive-command guard, session banner. Opt-in via template. │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
-## The core loop: Orchestrate → Delegate → Verify
-
-The main thread is the **Orchestrator**. For non-trivial work it:
-
-1. **Frames** the goal and success criteria.
-2. **Plans** with `/plan-work` (or the `orchestrator-planner` agent for big/ambiguous work).
-3. **Delegates** each task to the owning specialist via the `Agent` tool — independent
-   tasks in parallel.
-4. **Integrates** specialist results into one coherent thread.
-5. **Verifies** with `/quality-gate` (pulling in `code-reviewer` / `security-auditor`).
-6. **Reports** outcomes faithfully and, if asked, ships with `/ship`.
+## The Core Loop
 
 ```
 User goal
    │
    ▼
-[Orchestrator] ── /plan-work ──▶ framed plan with task→owner mapping
+[Classify Topology] ── SOLO → do it yourself
+   │                    SEQUENTIAL / PARALLEL / HIERARCHICAL ↓
+   ▼
+[Plan with Contracts] ── /plan-work or orchestrator-planner
+   │                     Each task: owner + context brief + I/O contract
    │
-   ├─▶ Agent: backend-engineer   ─┐
-   ├─▶ Agent: frontend-engineer   ├─ parallel where independent
-   ├─▶ Agent: deep-researcher    ─┘
+   ├─▶ Agent: specialist-A  ─┐
+   ├─▶ Agent: specialist-B   ├─ per classified topology
+   ├─▶ Agent: specialist-C  ─┘
    │
    ▼
-[Integrate] ──▶ /quality-gate ──▶ code-reviewer / security-auditor
+[Inspect Adversarially] ── /quality-gate
+   │                        Inspector: fresh context, artifact-only, opposing mandate
+   │                        High-stakes? → /critical-decision (proponent + skeptic + judge)
    │
    ▼
-[Report] ──▶ /ship (only when asked)
+[Learn] ── write episode to .claude/memory/episodes/
+   │        periodically /reflect → distill to .claude/rules/
+   │
+   ▼
+[Report / Ship]
 ```
 
-## Why subagents (not one mega-prompt)
+## What Makes This Architecture Surpass Standard Approaches
 
-- **Focus** — a specialist's whole context is its domain, so it reasons deeper.
-- **Isolation** — each runs in its own context window; the main thread keeps only the
-  conclusion, not the file dumps.
-- **Parallelism** — independent specialists run concurrently.
-- **Least privilege** — reviewers and auditors are read-only by tool restriction.
+| Dimension | Standard (v1 / most frameworks) | AAWS v2 | Mechanism |
+|---|---|---|---|
+| Topology | Fixed hub-and-spoke | Dynamic per-task classification | §1.2 of CLAUDE.md |
+| Verification | Same-context self-review | Structurally separated Inspector with adversarial mandate | Inspector agent + /quality-gate |
+| High-stakes | Single reviewer | Courtroom-style structured debate (proponent, skeptic, judge) | /critical-decision |
+| Handoffs | Free-form descriptions | Explicit I/O contracts on every agent | handoff-contracts rule + agent frontmatter |
+| Context | Dump everything | Scoped per agent via context briefs | Plan step §1.3 of CLAUDE.md |
+| Memory | Stateless (reset each session) | Four-tier CoALA: working, episodic, semantic, procedural | §2 of CLAUDE.md + /reflect |
+| Learning | None | Episodic → distillation → rules/skills | /reflect skill |
+| Self-extension | Mint more static agents | Mint agents with contracts; improve via evidence | /forge-agent + /reflect |
 
-## Self-extension (reaching "all fields")
+## Specialist Roster
 
-The system is designed to grow. `/forge-agent` and `/forge-skill` scaffold new specialists
-and playbooks in the exact house format and register them in `CLAUDE.md`. A gap discovered
-during work becomes a permanent capability, so AAWS broadens toward any field it's used in.
+16 agents in `.claude/agents/`:
 
-See `GETTING_STARTED.md` for how to use and extend the system.
+**Domain specialists** (12): orchestrator-planner, solution-architect, deep-researcher,
+backend-engineer, frontend-engineer, devops-engineer, data-scientist, security-auditor,
+qa-test-engineer, code-reviewer, debugger, technical-writer.
+
+**Meta-agents** (4): inspector (adversarial verification), consensus-judge (arbitration),
+proponent (advocacy in debate), skeptic (challenge in debate).
+
+## Evidence Base
+
+This architecture is designed against empirical findings, not intuition:
+
+- AdaptOrch (arXiv:2602.16873) — topology-aware routing: 12–23% improvement
+- MAST (arXiv:2503.13657) — 41.8% of failures from specification problems
+- Inspector pattern (ICML 2025) — 96.4% error interception with structural separation
+- Reflexion (arXiv:2303.11366) — +11pp HumanEval from verbal self-critique
+- Six Sigma Agent (arXiv:2601.22290) — mathematical reliability via consensus
+- PROClaim (arXiv:2603.28488) — courtroom-style debate for verification
+- MAST single-agent finding (arXiv:2604.02460) — multi-agent not always better
+- Claude Code analysis (arXiv:2604.14228) — 98.4% infrastructure, 1.6% AI logic
+- Anthropic's multi-agent system — 90.2% improvement, failure from vague delegation
+- Council Mode (arXiv:2604.02923) — 35.9% hallucination reduction via multi-model consensus
+
+See `GETTING_STARTED.md` for usage instructions.
