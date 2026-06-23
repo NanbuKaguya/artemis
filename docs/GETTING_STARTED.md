@@ -1,119 +1,86 @@
-# Getting Started with AAWS v2
+# Getting Started with Artemis
 
-Open this repo in Claude Code and the system loads automatically. `CLAUDE.md` becomes
-the operating constitution, specialists become available for delegation, skills become
-slash commands, and path-scoped rules activate when you touch matching files.
+Open this repo in Claude Code. The system loads automatically.
 
 ## Quick Start
 
-For any non-trivial task:
-
 ```
-/plan-work <your goal>      → classify topology, build contracted task plan
-                            → orchestrator delegates to specialists per topology
-/quality-gate               → adversarial inspection (Inspector in fresh context)
-/ship                       → commit in house style (push/PR only if you ask)
+/quality-gate     # verify before shipping
+/reflect          # distill episodes into rules (every 5-10 episodes)
 ```
 
-For high-stakes decisions:
+That's it. The operating loop runs automatically on every non-trivial task.
+
+## The Loop
+
+Every task follows this sequence:
 
 ```
-/critical-decision <artifact>  → proponent + skeptic + judge structured debate
+CLARIFY → ANCHOR → BUILD → VERIFY → LEARN
 ```
 
-For system learning:
+**CLARIFY** — Spec ambiguous in ways that change the approach? Ask first.  
+**ANCHOR** — Touching multiple files or hard to reverse? Write `.spec-anchor`.  
+**BUILD** — Smallest correct change. Match surrounding patterns.  
+**VERIFY** — Tests → lint → type check → Inspector (if non-trivial).  
+**LEARN** — Failure or surprise? Write an episode. 5–10 episodes? Run `/reflect`.
 
-```
-/reflect                    → distill episodes into rules, prune low-signal
-```
+## The Agents (3, not 16)
 
-## The Core Loop
-
-Every non-trivial request follows this sequence:
-
-1. **Classify topology** — SOLO / SEQUENTIAL / PARALLEL-FANOUT / HIERARCHICAL
-2. **Plan with contracts** — each task gets an owner, context brief, and I/O contract
-3. **Delegate per topology** — parallel for independent tasks, sequential for dependent
-4. **Inspect adversarially** — Inspector in fresh context with artifact-only input
-5. **Learn** — write episode for failures/surprises; `/reflect` to distill
-
-## The Specialists (16 agents)
-
-| Agent | Domain | Model |
+| Agent | When | What it gets |
 |---|---|---|
-| `orchestrator-planner` | Strategy, decomposition, topology classification | opus |
-| `solution-architect` | System design, trade-offs, design docs | opus |
-| `deep-researcher` | Multi-source investigation, cited findings | sonnet |
-| `backend-engineer` | APIs, services, databases, business logic | sonnet |
-| `frontend-engineer` | UI, components, client state, accessibility | sonnet |
-| `devops-engineer` | CI/CD, IaC, containers, deployment | sonnet |
-| `data-scientist` | Analysis, modeling, evaluation, pipelines | sonnet |
-| `security-auditor` | Threat modeling, vuln review, hardening | opus |
-| `qa-test-engineer` | Test strategy, test authoring, coverage | sonnet |
-| `code-reviewer` | Diff review for correctness and cleanup | opus |
-| `debugger` | Root-cause analysis of failures | opus |
-| `technical-writer` | Docs, guides, explanations | sonnet |
-| `inspector` | Adversarial artifact verification | opus |
-| `consensus-judge` | Multi-agent arbitration | opus |
-| `proponent` | Advocate FOR in structured debate | sonnet |
-| `skeptic` | Advocate AGAINST in structured debate | sonnet |
+| `inspector` | After any non-trivial generation | Artifact only. No context. |
+| `researcher` | 3+ sources needed, 5+ unfamiliar files | The question only. |
+| `reviewer` | Before shipping a significant diff | The diff only. |
 
-## Memory Architecture
+The default is: **do it yourself**. Delegation costs context and latency. Justify it.
 
-Four tiers, each with a distinct role:
-
-- **Working** — current context window (ephemeral)
-- **Episodic** — `.claude/memory/episodes/` — records of past work with lessons learned
-- **Semantic** — `CLAUDE.md`, `.claude/rules/` — distilled facts and conventions
-- **Procedural** — `.claude/skills/`, `.claude/agents/` — executable workflows
-
-Memory flows upward: episodes are raw evidence → `/reflect` distills them into rules
-and skill improvements → the system gets better at its job over time.
-
-## Extending the System
+## The Two-Layer Architecture
 
 ```
-/forge-agent <role>      → new specialist with I/O contracts
-/forge-skill <workflow>  → new playbook as a slash command
+CLAUDE.md     — Behavioral layer: HOW Claude works
+AGENTS.md     — Context layer: WHAT this project is
 ```
 
-Every gap becomes a permanent capability. New agents MUST include I/O contracts.
+For your own projects: put the operating loop in CLAUDE.md (or let Artemis handle it), and put project-specific context in AGENTS.md at the project root.
 
 ## Where Things Live
 
 ```
-CLAUDE.md                          # constitution (loads every session)
+CLAUDE.md                          # Operating loop (loads every session)
+AGENTS.md                          # Project context layer
 .claude/
-  agents/                          # 16 specialist subagents with I/O contracts
+  agents/                          # inspector · researcher · reviewer
   skills/
-    plan-work/                     # topology-aware planning
-    quality-gate/                  # adversarial inspection pipeline
-    critical-decision/             # structured debate for high-stakes
-    reflect/                       # episodic memory distillation
-    ship/                          # commit and deliver
-    forge-agent/                   # scaffold new specialists
-    forge-skill/                   # scaffold new playbooks
+    quality-gate/                  # Deterministic + adversarial verification
+    reflect/                       # Episode → rule distillation
   rules/
-    handoff-contracts.md           # standard delegation/response formats
-    episode-format.md              # episode record template
-    engineering-baseline.md        # source code conventions
-    tests.md                       # testing conventions
-  memory/
-    episodes/                      # episodic memory store
+    spec-anchor.md                 # Prevents specification drift
+    handoff-contracts.md           # Delegation format
+    episode-format.md              # Episode structure
+    learned.md                     # Accumulated rules (800 token budget)
   hooks/
-    guard-destructive.sh           # blocks dangerous commands (opt-in)
-    session-banner.sh              # session orientation (opt-in)
+    guard-destructive.sh           # Blocks dangerous commands (opt-in)
+    session-banner.sh              # Orientation + memory status (opt-in)
+  memory/
+    episodes/                      # Raw experience records
 docs/
-  ARCHITECTURE.md                  # full design with evidence base
-  GETTING_STARTED.md               # this file
-  settings.example.json            # opt-in permissions + hooks template
+  ARCHITECTURE.md                  # Design decisions with evidence base
 ```
 
 ## Activating Optional Guardrails
 
 ```bash
-cp docs/settings.example.json .claude/settings.json   # review before activating
+cp docs/settings.example.json .claude/settings.json
 chmod +x .claude/hooks/*.sh
 ```
 
-Review the template first. Nothing runs until you copy it into place.
+Review the template before copying — nothing runs until it's in place.
+
+## The Self-Improvement Loop
+
+```
+Task → Episode (failure/surprise) → /reflect → learned.md → Better next session
+```
+
+After 5–10 episodes, run `/reflect`. It distills high-signal patterns into rules, prunes what didn't hold, and keeps the rule base under 800 tokens. The system compounds — each session starts from a better baseline than the last.
