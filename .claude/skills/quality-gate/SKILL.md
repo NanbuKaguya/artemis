@@ -1,118 +1,57 @@
 ---
 name: quality-gate
-description: Adversarial verification pipeline. Runs structurally separated inspection on the current work before declaring it done. The Inspector receives only the artifact, never the generator's context. Use after implementing a change and before reporting success or shipping.
-argument-hint: "[optional: area or scope to focus on]"
+description: Verification pipeline before declaring work done. Deterministic checks first (tests, lint, type, secrets), then adversarial model review. Use after implementing any non-trivial change and before reporting success.
 ---
 
-# Quality Gate — Adversarial Verification Pipeline
+# Quality Gate
 
-Verify the current work by evidence and structural inspection — not self-review.
-Scope: **$ARGUMENTS**
+Run this before declaring any non-trivial work complete.
 
-Current state:
+## Phase 1 — Deterministic Checks
 
-!`git diff --stat HEAD`
+Run whatever applies to the changed code. Paste the real output.
 
----
+```bash
+# Tests (use the project's actual command)
+npm test / pytest / go test ./... / cargo test
 
-## Phase 1 — Mechanical Checks (run directly, no delegation needed)
+# Lint
+eslint . / flake8 / golangci-lint run / clippy
 
-Run every applicable check. Report real output. Skip = state why.
+# Type checks
+tsc --noEmit / mypy . / pyright
 
-1. **Build** — Run the project's build command. Zero errors.
-2. **Tests** — Run the relevant test suite (full suite before delivery). Show output.
-3. **Lint / format / types** — Run the project's linter, formatter, type checker. Show output.
-4. **No secrets** — Grep the diff for patterns: API keys, tokens, passwords, private keys.
+# Secret scan on staged changes
+git diff HEAD | grep -iE "(password|secret|token|api_key)\s*=\s*['\"][^'\"]{4,}" | grep -v "test\|example\|placeholder"
 
+# What actually changed
+git diff --stat HEAD
 ```
-!`git diff HEAD -- . ':!*.md' | grep -iE '(api.?key|secret|token|password|private.?key|BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE)' || echo "No secret patterns found"`
-```
 
-If any mechanical check fails, stop here. Do not proceed to inspection with known
-failures — fix first, then re-run the gate.
+**If Phase 1 fails:** stop. Report the failure with full output. Fix it. Do not proceed to Phase 2 until Phase 1 is green.
 
----
+## Phase 2 — Adversarial Review
 
-## Phase 2 — Structural Inspection (MANDATORY for non-trivial changes)
-
-**This is the core of the quality gate.** Invoke the `inspector` agent (or
-`code-reviewer` for code changes) as a SEPARATE agent with an ADVERSARIAL mandate.
-
-### What the Inspector receives:
+Invoke `inspector` with:
 
 ```
 ## Artifact
-[The git diff or the relevant output — ONLY the artifact]
+[git diff HEAD — the actual diff output]
 
 ## Inspection Mandate
-Review for: correctness bugs (logic errors, edge cases, error handling),
-security issues (injection, authz, data exposure), and specification
-compliance (does it meet the stated acceptance criteria).
-
-## Output Contract
-{ findings: [{severity: Critical|High|Medium|Low, location, issue, fix}],
-  verdict: PASS|FAIL|CONDITIONAL, summary }
+Find: correctness bugs, security vulnerabilities, contract violations, and logic errors.
+Assume errors were made. This is the artifact only — no context about how it was built.
 ```
 
-### What the Inspector does NOT receive:
-- The generator's reasoning or thought process
-- The orchestrator's planning context
-- Why the code was written this way
-- Any "heads up" about known issues
+The inspector gets the artifact cold. No context. No explanation. That is the mechanism.
 
-The Inspector reads the artifact cold and judges it on its merits.
+## Verdict
 
-### Interpreting the verdict:
+| Result | Action |
+|---|---|
+| Phase 1 fails | Fix before anything else. Full output in report. |
+| Inspector: FAIL | Address all Critical and High before shipping. |
+| Inspector: CONDITIONAL | Address stated conditions. Document any Medium/Low deferral and why. |
+| Inspector: PASS | Ship. |
 
-- **PASS** — no Critical or High findings. Proceed to Phase 3.
-- **CONDITIONAL** — no Critical, but High findings that may be acceptable. Review the
-  conditions. If acceptable, document why and proceed. If not, fix and re-inspect.
-- **FAIL** — Critical or High findings exist. Fix them. Re-run the gate from Phase 1.
-  Do NOT skip re-inspection after fixing — the fix itself could introduce new issues.
-
----
-
-## Phase 3 — Scope & Hygiene (quick, direct)
-
-1. **Diff is minimal and on-topic** — no stray debug code, no unrelated churn.
-2. **Matches surrounding code style** — naming, idiom, structure consistent.
-3. **New behavior has new tests** — if the change adds functionality, tests exist for it.
-
----
-
-## Phase 4 — Verdict
-
-Produce a pass/fail checklist with evidence:
-
-```
-## Quality Gate Results
-
-Mechanical:
-- [ ] Build:    [PASS/FAIL] — [output summary]
-- [ ] Tests:    [PASS/FAIL] — [X passed, Y failed]
-- [ ] Lint:     [PASS/FAIL] — [output summary]
-- [ ] Secrets:  [PASS/FAIL] — [none found / FOUND: ...]
-
-Inspection:
-- [ ] Inspector verdict: [PASS/FAIL/CONDITIONAL]
-- [ ] Findings: [count by severity, or "none"]
-- [ ] Must-fix: [list, or "none"]
-
-Hygiene:
-- [ ] Minimal diff: [yes/no]
-- [ ] Style match: [yes/no]
-- [ ] Tests for new behavior: [yes/no/N/A]
-
-## Overall: [PASS / FAIL — reason]
-```
-
-**State plainly whether the work is ready.** If anything failed, show the output and
-stop. Do not declare success with unresolved findings.
-
----
-
-## Escalation to /critical-decision
-
-If the work involves security-critical code, irreversible operations, or architectural
-decisions, escalate to `/critical-decision` which runs the full proponent → skeptic →
-judge debate. The quality gate alone is not sufficient for high-stakes changes.
+Done = Phase 1 green + Inspector PASS or CONDITIONAL with conditions addressed.

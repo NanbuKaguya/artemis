@@ -1,59 +1,70 @@
-# Artemis Agent Work System (AAWS) — v2
+# Artemis
 
-> A **top-tier agent work system** built on Claude Code's native features, designed to
-> surpass standard multi-agent frameworks by addressing the empirically proven failure
-> modes that make most agent systems mediocre.
+A world-class AI work system built on Claude Code's native primitives. Not an orchestration framework — a context engineering system that makes every session better than the last.
 
-AAWS is not an external framework. It's a disciplined arrangement of Claude Code's own
-features — subagents, skills, memory, rules, and hooks — assembled into an operating
-model grounded in current research (AdaptOrch, MAST, Reflexion, Inspector pattern).
+## What it is
 
-## What makes it different
+Artemis configures Claude Code to operate at its theoretical ceiling:
 
-Most multi-agent systems fail because of specification ambiguity (41.8%), coordination
-breakdown (36.9%), and verification gaps (21.3%) — not model capability. AAWS addresses
-each of these structurally:
-
-- **Topology-aware orchestration.** Tasks are classified (SOLO / SEQUENTIAL / PARALLEL /
-  HIERARCHICAL) before delegation, matching the coordination pattern to the task structure
-  instead of using one-size-fits-all hub-and-spoke.
-- **Structurally adversarial verification.** The Inspector agent reviews artifacts in a
-  fresh context with an opposing mandate — never same-context self-review. For high-stakes
-  decisions, structured debate (proponent + skeptic + judge).
-- **Explicit I/O contracts on every handoff.** Every agent declares what it receives and
-  returns. No free-form delegation.
-- **Four-tier memory (CoALA model).** Working + Episodic + Semantic + Procedural. The
-  system learns from experience via `/reflect`, which distills episodes into rules.
-- **16 specialists + self-extension.** 12 domain experts, 4 meta-agents (inspector, judge,
-  proponent, skeptic). `/forge-agent` mints new specialists with contracts when gaps appear.
+- **The right loop:** CLARIFY → ANCHOR → BUILD → VERIFY → LEARN. Each step is justified by empirical research on where agent systems fail.
+- **Minimal instruction surface:** CLAUDE.md at ~500 tokens. Every line changes Claude's defaults. Bloat causes instruction ignoring.
+- **Deterministic enforcement:** Hooks for hard requirements, not prose. The guards run; they don't ask nicely.
+- **Adversarial verification:** Inspector agent operates in fresh context, artifact only. Same mechanism responsible for 96.4% error interception in the ICML 2025 Inspector pattern.
+- **Self-improvement:** Episodic memory → `/reflect` → distilled rules. The system gets better through experience, not through manual updates.
 
 ## Quick start
 
-Open this repo in Claude Code — the system loads automatically.
+Open this repo in Claude Code. The system loads automatically.
 
 ```
-/plan-work <goal>              # classify topology → contracted task plan
-/quality-gate                  # adversarial inspection pipeline
-/critical-decision <artifact>  # structured debate for high-stakes
-/reflect                       # distill experience into rules
-/ship                          # commit in house style
+/quality-gate     # verify before shipping
+/reflect          # distill episodes into rules (every 5-10 episodes)
 ```
+
+The loop runs automatically on every non-trivial task.
+
+## What's here
+
+```
+CLAUDE.md                          # The operating loop — loads every session
+.claude/
+  agents/
+    inspector.md                   # Adversarial artifact review (fresh context)
+    researcher.md                  # Multi-source investigation (context isolation)
+    reviewer.md                    # Code diff review (cold read)
+  skills/
+    quality-gate/                  # Deterministic + adversarial verification
+    reflect/                       # Episode → rule distillation
+  rules/
+    spec-anchor.md                 # Prevents specification drift
+    handoff-contracts.md           # Delegation format
+    episode-format.md              # Episode structure
+    learned.md                     # Accumulated rules (800 token budget)
+  hooks/
+    guard-destructive.sh           # Blocks dangerous commands (opt-in)
+    session-banner.sh              # Orientation + memory status (opt-in)
+  memory/
+    episodes/                      # Raw experience records
+docs/
+  ARCHITECTURE.md                  # Design decisions + evidence base
+```
+
+## The self-improvement loop
+
+```
+Task → Episode (failure/surprise) → /reflect → learned.md → Better next session
+```
+
+After 5–10 episodes, run `/reflect`. It distills high-signal patterns into rules, prunes what didn't hold, and keeps the rule base under 800 tokens. The system compounds — each session starts from a better baseline than the last.
 
 ## Evidence base
 
-The architecture is designed against empirical findings:
-
-| Finding | Source | How AAWS addresses it |
-|---|---|---|
-| 41.8% of multi-agent failures = specification problems | MAST (arXiv:2503.13657) | Explicit I/O contracts on every handoff |
-| 96.4% error interception with structural separation | ICML 2025 Inspector pattern | Inspector agent: fresh context, artifact-only |
-| 12–23% gain from dynamic topology routing | AdaptOrch (arXiv:2602.16873) | Mandatory topology classification before planning |
-| +11pp from verbal self-critique stored as memory | Reflexion (arXiv:2303.11366) | Episodic memory + /reflect distillation |
-| Multi-agent debate fails under sycophancy | arXiv:2509.05396 | Strict isolation: proponent/skeptic never see each other |
-| 98.4% of agentic system value is infrastructure | arXiv:2604.14228 | Contracts, rules, hooks — not just agent prompts |
-
-## Learn more
-
-- **`docs/ARCHITECTURE.md`** — full design, six layers, evidence base
-- **`docs/GETTING_STARTED.md`** — usage, specialist roster, file map
-- **`CLAUDE.md`** — the operating constitution loaded every session
+| Decision | Source |
+|---|---|
+| ~500 token CLAUDE.md | Claude Code docs: bloated files cause instruction ignoring |
+| 3 agents, not 16 | arXiv:2511.00872: multi-agent coordination degrades coding 2-15% |
+| Inspector: artifact only | ICML 2025: 96.4% error interception from structural separation |
+| Hooks for hard requirements | Anthropic + OpenAI: deterministic > advisory |
+| Spec anchoring | arXiv:2603.17104: recovers 90% of spec faithfulness loss |
+| Episodic memory + reflect | arXiv:2303.11366: +11pp from verbal self-critique |
+| Clarify before executing | arXiv:2503.13657: spec ambiguity = 41.8% of failures |

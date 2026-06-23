@@ -1,52 +1,30 @@
 ---
-paths:
-  - ".claude/memory/episodes/**"
+description: Format for writing episodic memory entries
+globs: [".claude/memory/episodes/**"]
 ---
 
-# Episode Record Format
+# Episode Format
 
-Episodes are the system's experience memory. Each records what happened, why, and what
-was learned — especially from failures, surprises, or hard-won insights.
+Write an episode after: a task failure, an unexpected outcome, a hard-won insight, or anytime you think "I wish I'd known this earlier."
 
-## Template
+**File:** `.claude/memory/episodes/YYYY-MM-DD-<slug>.md`
 
-Every episode file follows this structure. File name: `YYYY-MM-DD-<slug>.md`
+**Content — write exactly these four sections:**
 
 ```markdown
-# Episode: <date> — <short description>
+## What happened
+[One paragraph: the task, what went wrong or was surprising, the outcome]
 
-## Task
-What was attempted and what the success criteria were.
+## Root cause
+[One sentence: the underlying reason — not the symptom]
 
-## Topology
-Which coordination topology was used (SOLO/SEQUENTIAL/PARALLEL-FANOUT/HIERARCHICAL).
+## What changes next time
+[One or two sentences: the specific decision or action that should be different]
 
-## Outcome
-What actually happened — success, partial, or failure. Include real output/evidence.
-
-## Process
-Which agents were involved, what each did, where handoffs succeeded or failed.
-
-## Root Cause (for failures/surprises)
-Why the unexpected thing happened. Not a guess — trace it to a specific cause.
-
-## Rule Extracted
-RULE: When [specific condition], [specific action] instead of [default behavior].
-Because: [evidence from this episode].
-
-## Signal Strength
-HIGH — This was a clear, repeatable lesson.
-MEDIUM — This was informative but may be context-specific.
-LOW — Minor observation, may not generalize.
+## Signal
+HIGH | MEDIUM | LOW — will this change a future decision?
 ```
 
-## Guidelines
+**The test for whether to write an episode:** Would this have changed your approach if you'd known it at the start? If yes, write it. If it's just "things went fine," don't write it — you're accumulating noise.
 
-- Write episodes **promptly** after the task, while evidence is fresh.
-- Be concrete: "the security-auditor missed the SQL injection on line 42 because the
-  context brief didn't include the database schema" — not "the review could have been
-  better."
-- One episode per significant task or incident. Don't over-record routine work.
-- The RULE field is the most important part — it's what `/reflect` distills into
-  `.claude/rules/` entries. Make it specific and actionable.
-- Mark signal strength honestly. Not every episode is a HIGH lesson.
+**The test for a good episode:** Can `/reflect` distill it into a specific, actionable rule? If the "what changes next time" is vague, rewrite it until it's concrete.

@@ -1,5 +1,5 @@
 {
-  "_README": "TEMPLATE — review, then copy to .claude/settings.json to activate. This grants Claude Code pre-approved permissions and wires the optional safety hooks. Nothing here runs until you copy it into place. Tune the allow/deny lists to your project.",
+  "_README": "TEMPLATE — review, then copy to .claude/settings.json to activate. Nothing here runs until you copy it into place.",
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
@@ -15,7 +15,9 @@
       "Bash(git switch:*)",
       "Bash(git stash:*)",
       "Bash(ls:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)"
     ],
     "deny": [
       "Read(./.env)",

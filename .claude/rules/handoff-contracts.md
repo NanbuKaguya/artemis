@@ -1,68 +1,40 @@
 ---
-paths:
-  - ".claude/agents/**"
-  - ".claude/skills/**"
+description: Format for delegating to subagents and reading their results
 ---
 
-# Handoff Contract Standard
+# Handoff Contracts
 
-Every agent-to-agent handoff uses a structured format. Free-form handoffs are the #1
-source of multi-agent failure (41.8% of failures in the MAST taxonomy are
-specification/coordination problems).
+Every subagent delegation needs a clear contract — free-form delegation is the primary source of multi-agent failure.
 
-## Delegation Prompt Format (Orchestrator → Specialist)
+## Delegation format (you → subagent)
 
-When the Orchestrator dispatches a task via the `Agent` tool, the prompt MUST contain
-these sections in order:
-
-```
+```markdown
 ## Task
-[One-line description of what to accomplish]
-
-## Context
-[Scoped: only the files, outputs, or facts this task needs — never "read everything"]
+[One sentence: what to accomplish]
 
 ## Input
-[The specific artifact(s) being handed to this agent — diff, file list, prior output]
+[The specific artifact, files, or data this agent needs — nothing else]
 
-## Output Contract
-[Exact format the agent must return — e.g., "a list of findings as {severity, file,
-line, issue, fix}" or "updated file at path X"]
+## Output Format
+[Exact structure expected back — JSON schema, list format, specific fields]
 
 ## Acceptance Criteria
-[How the Orchestrator will judge success — measurable, not vague]
+[How you'll judge if the output is good enough to use]
 ```
 
-## Agent Response Format (Specialist → Orchestrator)
+## Inspector specifically
 
-Agents return structured output matching their declared output contract:
-
-```
-## Result
-[The deliverable in the contracted format]
-
-## Confidence
-[HIGH / MEDIUM / LOW — with one-line justification]
-
-## Flags
-[Anything the Orchestrator should know: risks found, scope exceeded, assumptions made]
-```
-
-## Inspector Handoff (Orchestrator → Inspector)
-
-The Inspector receives ONLY:
-
-```
+The inspector receives **only**:
+```markdown
 ## Artifact
-[The output to inspect — code diff, plan, document — with NO generator context]
+[The output to inspect — code diff, document, plan — verbatim]
 
 ## Inspection Mandate
-[What to look for: correctness bugs, security issues, specification violations, etc.]
-
-## Output Contract
-{ findings: [{severity: Critical|High|Medium|Low, location: string, issue: string,
-  fix: string}], verdict: PASS | FAIL | CONDITIONAL, summary: string }
+[What to find: e.g., "correctness bugs and security vulnerabilities"]
 ```
 
-The Inspector NEVER receives: the generator's reasoning, the orchestrator's planning
-context, or why the artifact was produced the way it was.
+Never give the inspector: the context that produced the artifact, why it was built this way, or what you were trying to achieve. That information biases the review toward agreement. The cold read is the mechanism.
+
+## Agent response format
+
+Agents return structured output per their declared output contract. If an agent returns free-form text when you asked for JSON, ask it to reformat before using the output.
