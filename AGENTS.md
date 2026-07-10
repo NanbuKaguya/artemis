@@ -88,12 +88,26 @@ python3 tests/test_core.py   # 9/9 通过
 - [ ] **飞书可交互卡片**：`notify` 增加"通过/驳回"按钮回调（需一个轻量 Web 服务接 webhook）。[验收] 人在飞书点按钮即可回写终选结果。
 
 ### P2（决策级选品 + 半自动上架 + 监控，蓝图 8.2）
-- [ ] **数据源接入层** `src/datasources/`：封装蝉妈妈/飞瓜（付费 API）+ 巨量算数 + 抖店开放平台（自有店铺）。统一映射到 `models.Product`。**限频、缓存、去重、带时间戳**。[验收] `hunter` 从真实源取数替换 mock，可回退 mock。
-- [ ] **评论洞察 Agent** `agents/voc.py`：抓竞品评论→情感/主题聚类→输出痛点/卖点缺口，喂给 scorer 的 content 维度与 copywriter。[验收] copywriter 卖点来自真实差评而非模板。
+
+> **P2 已拆到函数级**：代码里搜 `TODO(Codex-N)`，按编号 1→13 顺序实现，
+> 每个编号一个 commit。骨架/契约/确定性部分已写好并有测试（`tests/test_p2.py`），
+> 你只需填空，不要改契约。前置凭证（购买 API、开放平台注册）是人类的事，
+> 缺凭证时一切自动回退 mock/dry-run，不要伪造数据绕过。
+
+- [ ] **数据源接入层** `src/datasources/`（骨架✅：base.py 限频/缓存/契约、mock.py、trend.py 已实现有测试）
+  - `TODO(Codex-1~3)` chanmama.py：HTTP 封装 → 榜单拉取 → 字段映射（映射表在文件头，缺字段返回 None 绝不编造）
+  - `TODO(Codex-4~5)` ali1688.py：货源搜索 → 供应链字段补齐（enrich 模式）
+  - [验收] hunter 从真实源取数，无凭证回退 mock；`python3 tests/test_p2.py` 全绿。
+- [ ] **半自动上架** `src/doudian/client.py` + `agents/listing.py`（骨架✅：签名算法/草稿组装/dry-run 已实现有测试）
+  - `TODO(Codex-6~8)` client.py：HTTP call（重试/退避）→ token 刷新 → 图片上传
+  - `TODO(Codex-9)` listing.py：接通真实 API 写草稿（status=1 断言不许删——发布红线）
+  - [验收] 只到草稿态，发布必须人点；`build_draft_payload` 的 status=1 测试始终通过。
+- [ ] **监控 Agent** `agents/monitor.py`（骨架✅：evaluate 熔断规则已实现有测试）
+  - `TODO(Codex-10~11)`：罗盘/千川指标拉取 → 定时 tick（pause 级进人工闸，绝不自动加投）
+- [ ] **评论洞察 Agent** `agents/voc.py`（骨架✅：离线词频版已实现有测试）
+  - `TODO(Codex-12~13)`：评论获取（合规限频，不碰个人信息）→ embedding 聚类版（失败回退词频版）
+  - [验收] copywriter 卖点来自真实差评而非模板。
 - [ ] **竞争分析 Agent** `agents/competition.py`：把 `scoring._competition_score` 升级为独立 Agent，产出价格带机会图。[验收] 蓝海判定有价格带空隙依据。
-- [ ] **供应链评估 Agent** `agents/supply.py`：1688 开放平台 API 比价 + 稳定性评分，标记"需人工验样/签约"。[验收] 输出必带人工事项清单。
-- [ ] **半自动上架** `agents/listing.py` + `src/doudian/`：组装商品草稿 → 抖店开放平台**商品 API 写草稿态** → `request_human_gate("发布")`。[验收] 只到草稿，发布必须人点。**严禁 RPA 刷后台。**
-- [ ] **监控 Agent** `agents/monitor.py`：接自有店铺罗盘/千川，盯 GMV/转化/退款/ROI，阈值熔断+飞书预警。[验收] 退款率超阈值自动"暂停"提醒（绝不自动加投）。
 - [ ] **切到 LangGraph**：`run_demo` 生产路径改用 `graph.py`（检查点/HITL/条件路由）。[验收] 人工闸门用 `interrupt` 真实挂起，可 resume。
 
 ### P3（闭环校准 + 优化，走向"AI 运营员工"，蓝图 8.3）
