@@ -1,0 +1,22 @@
+# MVP 脚手架本身零依赖即可运行（离线 demo）。
+# 以下为"接入生产能力"时按需安装，Codex 升级时逐步启用。
+
+# —— 编排（生产用 LangGraph 有状态图，见 src/graph.py）——
+langgraph>=0.2.0
+
+# —— LLM（三选一或多路由，见 src/llm.py）——
+anthropic>=0.40.0          # Claude（reasoning 主力）
+# openai>=1.40.0
+# dashscope>=1.20.0        # 通义千问（国产/合规/成本）
+
+# —— 数据/存储（P2 起）——
+# pydantic>=2.0
+# sqlmodel>=0.0.16
+# psycopg[binary]>=3.1
+# pgvector>=0.3
+
+# —— 采集（仅读/半自动，限频合规）——
+# playwright>=1.45
+
+# —— 测试 ——
+pytest>=8.0
