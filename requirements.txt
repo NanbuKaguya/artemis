@@ -1,0 +1,15 @@
+# 核心（必需）
+pandas>=2.0
+numpy>=1.24
+pyarrow>=12.0
+scipy>=1.10
+
+# 数据源（在你本机接真实 A 股数据时需要）
+akshare>=1.12.0        # 免费、无需 token、覆盖最广；本质是爬虫，注意限频
+# tushare>=1.4.0       # 可选：数据更规范、有 point-in-time 财务，需积分/年费
+
+# AI 研究助手（可选）
+anthropic>=0.40.0
+
+# 开发
+pytest>=7.0
