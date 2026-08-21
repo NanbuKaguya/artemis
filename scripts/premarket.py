@@ -21,12 +21,15 @@ from artemis.alpha import factors as F
 from artemis.portfolio.construct import build_weights, combine_factors
 from artemis.regime.market_state import RegimeModel
 from artemis.rules import price_limit_pct, round_limit_price
+from artemis.risk.controls import Position, daily_risk_report, render_risk_report
 
 FACTORS = ["momentum_120_20", "low_vol_60", "turnover_20", "vol_price_corr"]
 
 
 def premarket_plan(bars: pd.DataFrame, current_holdings: dict[str, float] | None = None,
-                   cfg: ArtemisConfig | None = None) -> dict:
+                   cfg: ArtemisConfig | None = None,
+                   positions: list[Position] | None = None,
+                   equity_curve: pd.Series | None = None) -> dict:
     """产出今日执行清单。
 
     bars 必须只包含截至**昨日收盘**的数据 —— 今天的数据你还不知道。
@@ -41,20 +44,32 @@ def premarket_plan(bars: pd.DataFrame, current_holdings: dict[str, float] | None
     gres = guard.apply(bars)
     mask = gres.mask
 
-    # 2) 择时 -> 今日目标总仓位
+    # 2) 风控总检 —— 必须在择时之前，因为它可以直接把仓位打到 0
+    risk_rep = None
+    risk_mult = 1.0
+    forced_exit_codes: set[str] = set()
+    if positions is not None and equity_curve is not None:
+        risk_rep = daily_risk_report(positions, equity_curve, last_date.date(), cfg.risk)
+        risk_mult = risk_rep["portfolio"]["position_multiplier"]
+        forced_exit_codes = {e["code"] for e in risk_rep["forced_exits"]}
+
+    # 3) 择时 -> 今日目标总仓位
     regime = RegimeModel(cfg.regime).fit_transform(bars)
-    target_pos = float(regime.target_position.loc[last_date])
+    target_pos = float(regime.target_position.loc[last_date]) * risk_mult
     state = str(regime.state.loc[last_date])
 
-    # 3) 选股
+    # 4) 选股
     raw = F.compute(bars, FACTORS)
     prep = pd.DataFrame({c: F.prepare(raw[c], bars) for c in raw.columns}, index=bars.index)
     score = combine_factors(prep)
     weights = build_weights(score, bars, mask=mask, cfg=cfg.portfolio)
     target_w = weights.loc[last_date]
     target_w = target_w[target_w > 0] * target_pos
+    # 强制止损的票，无论信号如何一律清零 —— 风控优先于 alpha
+    if forced_exit_codes:
+        target_w = target_w.drop(index=[c for c in forced_exit_codes if c in target_w.index])
 
-    # 4) 生成买卖清单
+    # 5) 生成买卖清单
     today_bars = bars.loc[last_date]
     orders = []
     all_codes = set(target_w.index) | set(current_holdings)
@@ -88,6 +103,7 @@ def premarket_plan(bars: pd.DataFrame, current_holdings: dict[str, float] | None
         "universe_size": int(mask.loc[last_date].sum()) if last_date in mask.index.get_level_values("date") else 0,
         "orders": orders,
         "guard_summary": gres.summary.to_dict("index"),
+        "risk": risk_rep,
     }
 
 
@@ -101,6 +117,9 @@ def render(plan: dict) -> str:
         f"可交易股票 : {plan['universe_size']} 只（已排雷）",
         "",
     ]
+    if plan.get("risk"):
+        lines.append(render_risk_report(plan["risk"]))
+        lines.append("")
     if not plan["orders"]:
         lines.append("今日无需调仓。什么都不做也是一种执行。")
     else:
