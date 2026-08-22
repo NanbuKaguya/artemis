@@ -23,6 +23,24 @@ L0  数据           ← point-in-time、防未来函数
 **注意 L3 的位置。** 大多数人从这一层开始，也止步于这一层 —— 这是散户量化
 最常见的失败路径。
 
+## 两条路
+
+**不追求全系统上线也是个完整答案。** 完整系统从零到实盘不少于一年，
+而其中两块不需要 alpha、不需要 Level-2、不需要财务数据就能用，
+且恰恰是"少亏钱"贡献最大的：排雷 + 纪律。
+
+```bash
+pip install pandas numpy akshare
+python -m artemis.lite watch     # 每天开盘前：自选股排雷
+python -m artemis.lite log       # 每次下单前：事前承诺
+python -m artemis.lite review    # 每周：临时起意占比是多少
+python -m artemis.lite audit     # 做一次：每条规则在你的市场值多少钱
+```
+
+见 `docs/06-Lite两周方案.md`。下面是完整系统。
+
+---
+
 ## 快速开始
 
 ```bash
@@ -83,6 +101,7 @@ BarStore("./data_cache").write(bars)
 | `artemis/alpha/research_log.py` | 研究日志 | 自动记录每次试验，按公式指纹去重 |
 | `artemis/data/fundamentals.py` | 财务 PIT 引擎 | 公告日对齐、累计转单季、追溯调整 |
 | `artemis/data/ingest.py` | 规模化落地 | 增量 + 并发限流 + 断点续传 |
+| `artemis/lite.py` | **Lite 最小可用集** | 排雷 + 纪律，只依赖 AkShare 一个接口 |
 | `artemis/data/preflight.py` | 数据体检 | 接真实数据第一件事：找出会静默失效的能力 |
 | `artemis/data/level2.py` | L2 契约与聚合 | 逐笔→日频特征，处理沪深撤单编码不对称 |
 | `artemis/data/qmt_source.py` | QMT 适配器 | 能力探测，无 L2 权限自动退回 L1 |
