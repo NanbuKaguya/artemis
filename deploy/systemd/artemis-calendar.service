@@ -1,0 +1,18 @@
+[Unit]
+Description=Artemis 交易日历刷新
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=artemis
+Group=artemis
+EnvironmentFile=/etc/artemis/artemis.env
+WorkingDirectory=/var/lib/artemis
+ExecStart=/bin/sh -c '"$ARTEMIS_HOME/.venv/bin/python" -m artemis.service calendar-refresh'
+TimeoutStartSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/artemis

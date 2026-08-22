@@ -1,0 +1,13 @@
+[Unit]
+Description=盘前情报（工作日 08:40，北京时间）
+
+[Timer]
+# 08:40 —— 早于 09:15 集合竞价，留出人工过目和处置的时间
+OnCalendar=Mon..Fri 08:40 Asia/Shanghai
+# 机器休眠错过则开机后补跑：错过盘前比跑晚了更糟
+Persistent=true
+RandomizedDelaySec=120
+Unit=artemis-brief@premarket.service
+
+[Install]
+WantedBy=timers.target

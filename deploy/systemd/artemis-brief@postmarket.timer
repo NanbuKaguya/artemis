@@ -1,0 +1,11 @@
+[Unit]
+Description=盘后复盘（工作日 15:30，北京时间）
+
+[Timer]
+OnCalendar=Mon..Fri 15:30 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=300
+Unit=artemis-brief@postmarket.service
+
+[Install]
+WantedBy=timers.target

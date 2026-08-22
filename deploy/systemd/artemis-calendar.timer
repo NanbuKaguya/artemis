@@ -1,0 +1,12 @@
+[Unit]
+Description=每月刷新交易日历
+
+[Timer]
+# 每月 1 号。国务院办公厅通常在上一年 11-12 月公布次年节假日安排，
+# 含调休，所以年底那次刷新尤其重要。
+OnCalendar=*-*-01 03:00 Asia/Shanghai
+Persistent=true
+Unit=artemis-calendar.service
+
+[Install]
+WantedBy=timers.target

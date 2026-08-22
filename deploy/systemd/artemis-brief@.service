@@ -1,0 +1,40 @@
+# 模板单元：%i 取 premarket / postmarket
+# 启用：systemctl enable --now artemis-brief@premarket.timer
+[Unit]
+Description=Artemis %i 情报简报
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=artemis
+Group=artemis
+EnvironmentFile=/etc/artemis/artemis.env
+WorkingDirectory=/var/lib/artemis
+
+# 简报本身不依赖 LLM。加 --llm 让本地 Hermes 补一段解读，
+# 挂了也只是少一段叙述，事实部分照常产出。
+ExecStart=/bin/sh -c '\
+  "$ARTEMIS_HOME/.venv/bin/python" -m artemis.brief %i --llm \
+    | tee "$ARTEMIS_BRIEF_DIR/$(date +%%Y%%m%%d)-%i.txt" \
+    | { [ -n "$ARTEMIS_NOTIFY_CMD" ] && $ARTEMIS_NOTIFY_CMD || cat; }'
+
+# 退出码 3 = 非交易日，是正常跳过而不是故障。
+# 不写这行，systemd 会把每个周末都记成失败，几周后你就不看告警了。
+SuccessExitStatus=0 3
+
+TimeoutStartSec=900
+
+# --- 加固：这个服务只读数据、只写自己的目录 ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/artemis
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
