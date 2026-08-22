@@ -74,6 +74,9 @@ BarStore("./data_cache").write(bars)
 | `artemis/alpha/research_log.py` | 研究日志 | 自动记录每次试验，按公式指纹去重 |
 | `artemis/data/fundamentals.py` | 财务 PIT 引擎 | 公告日对齐、累计转单季、追溯调整 |
 | `artemis/data/ingest.py` | 规模化落地 | 增量 + 并发限流 + 断点续传 |
+| `artemis/data/level2.py` | L2 契约与聚合 | 逐笔→日频特征，处理沪深撤单编码不对称 |
+| `artemis/data/qmt_source.py` | QMT 适配器 | 能力探测，无 L2 权限自动退回 L1 |
+| `artemis/execution/cost.py` | 执行成本 | 挂单决策（含逆向选择）+ 滑点归因 |
 | `artemis/portfolio/` | 组合构建 | 等权 + 硬约束 + 缓冲带 |
 | `artemis/backtest/` | 带摩擦回测 | T+1、涨跌停、停牌、退市清算、真实成本 |
 | `artemis/validate/` | 反过拟合 | 五道闸门：样本外/前推/随机对照/参数高原/PBO+DSR |
