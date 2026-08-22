@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Callable
 
 import numpy as np
@@ -158,10 +159,35 @@ def neutralize(s: pd.Series, bars: pd.DataFrame, by_industry: bool = True,
     重仓了某个行业。2024 年 1 月的教训就是"以为在做 alpha，实际在做 beta"。
     """
     df = pd.DataFrame({"y": s})
+
+    # 显式检查回归变量是否真的可用。缺失时静默跳过是最危险的行为：
+    # 中性化"没起作用"和"起作用了"的输出都是一条正常的序列，
+    # 你不会发现自己以为在做 alpha、实际在赌小盘或赌行业。
+    dropped = []
     if by_size:
-        df["logmv"] = np.log(bars["total_mv"].replace(0, np.nan))
+        mv = bars["total_mv"].replace(0, np.nan)
+        if mv.isna().all():
+            dropped.append("市值（total_mv 全为空）")
+            by_size = False
+        else:
+            df["logmv"] = np.log(mv)
     if by_industry:
-        df["industry"] = bars["industry"]
+        ind = bars["industry"]
+        if ind.isna().all() or ind.nunique(dropna=True) <= 1:
+            dropped.append("行业（industry 缺失或无区分度）")
+            by_industry = False
+        else:
+            df["industry"] = ind
+
+    if dropped:
+        warnings.warn(
+            "中性化被跳过：" + "、".join(dropped) +
+            "。因子未做中性化，其超额收益可能主要来自风格暴露而非选股能力。"
+            "跑 artemis.data.preflight.report(bars) 查看完整的数据缺口。",
+            RuntimeWarning, stacklevel=2,
+        )
+    if not by_size and not by_industry:
+        return s
 
     def _resid(block: pd.DataFrame) -> pd.Series:
         b = block.dropna(subset=["y"])

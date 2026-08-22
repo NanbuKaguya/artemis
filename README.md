@@ -48,6 +48,15 @@ python -m pytest tests/ -q
 
 接真实数据（在你本机）：
 
+**第一件事是体检，不是回测。** 缺列造成的失效是静默的：
+排雷规则会返回"剔除 0%"、中性化会返回一条正常序列，都不报错。
+
+```python
+from artemis.data.preflight import report, assert_ready
+print(report(bars))          # 每项能力是活的、残的、还是死的
+assert_ready(bars)           # 硬闸门：关键能力失效直接抛错
+```
+
 ```python
 from artemis.data.akshare_source import AkshareSource, doctor
 print(doctor())              # 先体检：当前 akshare 版本有哪些能力可用
@@ -74,6 +83,7 @@ BarStore("./data_cache").write(bars)
 | `artemis/alpha/research_log.py` | 研究日志 | 自动记录每次试验，按公式指纹去重 |
 | `artemis/data/fundamentals.py` | 财务 PIT 引擎 | 公告日对齐、累计转单季、追溯调整 |
 | `artemis/data/ingest.py` | 规模化落地 | 增量 + 并发限流 + 断点续传 |
+| `artemis/data/preflight.py` | 数据体检 | 接真实数据第一件事：找出会静默失效的能力 |
 | `artemis/data/level2.py` | L2 契约与聚合 | 逐笔→日频特征，处理沪深撤单编码不对称 |
 | `artemis/data/qmt_source.py` | QMT 适配器 | 能力探测，无 L2 权限自动退回 L1 |
 | `artemis/execution/cost.py` | 执行成本 | 挂单决策（含逆向选择）+ 滑点归因 |

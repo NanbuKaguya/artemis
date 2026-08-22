@@ -22,6 +22,7 @@ from artemis.portfolio.construct import build_weights, combine_factors
 from artemis.regime.market_state import RegimeModel
 from artemis.rules import price_limit_pct, round_limit_price
 from artemis.risk.controls import Position, daily_risk_report, render_risk_report
+from artemis.data.preflight import check as preflight_check
 
 FACTORS = ["momentum_120_20", "low_vol_60", "turnover_20", "vol_price_corr"]
 
@@ -38,6 +39,11 @@ def premarket_plan(bars: pd.DataFrame, current_holdings: dict[str, float] | None
     cfg = cfg or ArtemisConfig()
     current_holdings = current_holdings or {}
     last_date = bars.index.get_level_values("date").max()
+
+    # 0) 数据体检。放在最前面，因为数据缺口造成的失效是静默的 ——
+    #    排雷规则会照样返回"剔除 0%"，中性化会照样返回一条正常序列。
+    pf = preflight_check(bars)
+    data_issues = pf[pf.status != "ok"][["capability", "status", "detail"]].to_dict("records")
 
     # 1) 排雷
     guard = Guard(cfg.guard)
@@ -104,6 +110,7 @@ def premarket_plan(bars: pd.DataFrame, current_holdings: dict[str, float] | None
         "orders": orders,
         "guard_summary": gres.summary.to_dict("index"),
         "risk": risk_rep,
+        "data_issues": data_issues,
     }
 
 
@@ -117,6 +124,12 @@ def render(plan: dict) -> str:
         f"可交易股票 : {plan['universe_size']} 只（已排雷）",
         "",
     ]
+    if plan.get("data_issues"):
+        lines.append("【数据体检】以下能力已失效或降级，相关结论不可信：")
+        for d in plan["data_issues"]:
+            mark = "✗" if d["status"] == "dead" else "▲"
+            lines.append(f"  {mark} {d['capability']}: {d['detail']}")
+        lines.append("")
     if plan.get("risk"):
         lines.append(render_risk_report(plan["risk"]))
         lines.append("")
