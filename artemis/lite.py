@@ -12,6 +12,7 @@
 成交额、总市值、换手率 —— 排雷需要的东西基本一次拿全。
 
 用法：
+    python -m artemis.lite doctor                  # 第一件事：体检，告诉你卡在哪
     python -m artemis.lite check 600519 000001 300750
     python -m artemis.lite watch                  # 检查 watchlist.txt 里的自选股
     python -m artemis.lite log                    # 记一笔交易的事前承诺
@@ -438,9 +439,12 @@ def cmd_audit(args: list[str]) -> None:
 注意上面体检报告里标为失效的能力 —— 对应的规则审计结论不可信。""")
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int | None:
     argv = argv if argv is not None else sys.argv[1:]
     cmd = argv[0] if argv else "help"
+    if cmd == "doctor":
+        from .doctor import main as doctor_main
+        return doctor_main()
     if cmd == "check":
         cmd_check(argv[1:])
     elif cmd == "watch":

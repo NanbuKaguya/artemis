@@ -30,14 +30,15 @@ L0  数据           ← point-in-time、防未来函数
 且恰恰是"少亏钱"贡献最大的：排雷 + 纪律。
 
 ```bash
-pip install pandas numpy akshare
+pip install -e '.[data]'
+python -m artemis.lite doctor    # 第一件事：告诉你卡在哪、下一条命令是什么
 python -m artemis.lite watch     # 每天开盘前：自选股排雷
 python -m artemis.lite log       # 每次下单前：事前承诺
 python -m artemis.lite review    # 每周：临时起意占比是多少
 python -m artemis.lite audit     # 做一次：每条规则在你的市场值多少钱
 ```
 
-见 `docs/06-Lite两周方案.md`。下面是完整系统。
+**从 `docs/08-如何跑起来.md` 开始**（一条不分叉的路），细节见 `docs/06-Lite两周方案.md`。下面是完整系统。
 
 ---
 
