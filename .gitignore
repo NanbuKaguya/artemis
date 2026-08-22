@@ -10,3 +10,6 @@ data_cache/
 *.parquet
 journal.jsonl
 *.log
+
+# macOS launchd 日志
+logs/

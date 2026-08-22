@@ -95,8 +95,10 @@ fi
 
 # ---------------------------------------------------------------- 6. 自选股
 step "6/6 自选股清单"
-if [ -s "$ROOT/watchlist.txt" ] && grep -qv '^\s*#' "$ROOT/watchlist.txt" 2>/dev/null; then
-  N=$(grep -cve '^\s*#' -e '^\s*$' "$ROOT/watchlist.txt" 2>/dev/null || echo 0)
+# 用 POSIX 字符类而不是 \s —— macOS 自带的是 BSD grep，不认 GNU 的 \s，
+# 会把缩进的注释行误计成股票代码
+if [ -s "$ROOT/watchlist.txt" ] && grep -qv '^[[:space:]]*#' "$ROOT/watchlist.txt" 2>/dev/null; then
+  N=$(grep -cve '^[[:space:]]*#' -e '^[[:space:]]*$' "$ROOT/watchlist.txt" 2>/dev/null || echo 0)
   ok "已有 $N 只"
 else
   cat > "$ROOT/watchlist.txt" <<'WL'
