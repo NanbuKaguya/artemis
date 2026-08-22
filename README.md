@@ -38,7 +38,11 @@ python scripts/validate_strategy.py
 python scripts/premarket.py
 python scripts/postmarket.py
 
-# 4. 摩擦回归测试
+# 4. 因子挖掘流水线（接真实数据后的主战场）
+python scripts/demo_pit_impact.py    # 看清 PIT 错误的代价
+python scripts/mine_factors.py       # 挖掘 + FDR 筛选 + 多重检验惩罚
+
+# 5. 回归测试（摩擦 + PIT 正确性）
 python -m pytest tests/ -q
 ```
 
@@ -66,6 +70,10 @@ BarStore("./data_cache").write(bars)
 | `artemis/guard/` | 排雷层 | 每条规则可用 `audit()` 度量价值 |
 | `artemis/regime/` | 择时层 | 多信号投票 → 目标总仓位 |
 | `artemis/alpha/` | 因子库与评估 | 因子必须写清经济逻辑才允许注册 |
+| `artemis/alpha/mining.py` | 因子挖掘 | FDR + HLZ 门槛 + 冗余检验，专治"挖掘=多重检验" |
+| `artemis/alpha/research_log.py` | 研究日志 | 自动记录每次试验，按公式指纹去重 |
+| `artemis/data/fundamentals.py` | 财务 PIT 引擎 | 公告日对齐、累计转单季、追溯调整 |
+| `artemis/data/ingest.py` | 规模化落地 | 增量 + 并发限流 + 断点续传 |
 | `artemis/portfolio/` | 组合构建 | 等权 + 硬约束 + 缓冲带 |
 | `artemis/backtest/` | 带摩擦回测 | T+1、涨跌停、停牌、退市清算、真实成本 |
 | `artemis/validate/` | 反过拟合 | 五道闸门：样本外/前推/随机对照/参数高原/PBO+DSR |
@@ -81,7 +89,10 @@ BarStore("./data_cache").write(bars)
 2. **五道闸门全过才允许上实盘。** `scripts/validate_strategy.py` 默认拒绝。
    你要拿证据说服它，不是它来讨好你。
 
-3. **AI 不做交易员。** LLM 提假设、做排雷、做复盘、做魔鬼代言人；
+3. **挖掘阶段的筛选不替代上线闸门。** 挖掘筛"因子有没有信息"，
+   闸门筛"策略能不能赚钱"，用的是不同的证据，都得过。
+
+4. **AI 不做交易员。** LLM 提假设、做排雷、做复盘、做魔鬼代言人；
    裁决权永远在数据和回测。
 
 ## 重要声明

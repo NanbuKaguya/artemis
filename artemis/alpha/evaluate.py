@@ -53,8 +53,13 @@ def evaluate_factor(
     name: str = "factor",
     n_quantiles: int = 5,
     horizon: int = 5,
+    quick: bool = False,
 ) -> FactorReport:
-    """评估单因子。mask 为排雷层输出，只在可交易样本上评估。"""
+    """评估单因子。mask 为排雷层输出，只在可交易样本上评估。
+
+    quick=True 跳过衰减曲线（要跑 6 个前瞻期，是最贵的一步）。
+    批量挖掘时用 quick，对进入候选的少数因子再跑完整评估。
+    """
     fwd = forward_returns(bars, horizons=(1, horizon, 20))
     df = pd.DataFrame({"f": fac, "r": fwd[f"fwd_{horizon}"]})
     if mask is not None:
@@ -92,7 +97,7 @@ def evaluate_factor(
 
     # --- 衰减：不同前瞻期的 IC ---
     decay = {}
-    for h in (1, 5, 10, 20, 40, 60):
+    for h in ((1, 5, 10, 20, 40, 60) if not quick else ()):
         f2 = forward_returns(bars, horizons=(h,))[f"fwd_{h}"]
         d2 = pd.DataFrame({"f": fac, "r": f2})
         if mask is not None:
