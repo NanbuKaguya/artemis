@@ -16,7 +16,8 @@
     python -m artemis.lite check 600519 000001 300750
     python -m artemis.lite watch                  # 检查 watchlist.txt 里的自选股
     python -m artemis.lite log                    # 记一笔交易的事前承诺
-    python -m artemis.lite review                 # 纪律复盘
+    python -m artemis.lite review                 # 纪律复盘 + 实际收益对账
+    python -m artemis.lite review --no-prices     # 只看占比，不拉行情
     python -m artemis.lite audit 200 3            # 抽样审计排雷规则（唯一需要真实历史的一步）
 
 一个重要区分：
@@ -421,29 +422,154 @@ def cmd_log() -> None:
         print(f"\n已记录到 journal.jsonl（{code} {side} {size:.1%}）")
 
 
-def cmd_review() -> None:
+def fetch_returns_for_journal(
+    codes: list[str], start: str, horizon: int = 20, sleep: float = 0.25
+) -> dict[str, "pd.Series"]:
+    """为日志里的股票拉取价格序列，用于计算事后收益。
+
+    只拉日志里出现过的代码，不是全市场 —— 通常几十只，可接受。
+    """
+    try:
+        import akshare as ak
+    except ImportError as e:
+        raise RuntimeError("需要 akshare 才能对上实际收益") from e
+    import sys
+    import time
+
+    s_str = (pd.Timestamp(start) - pd.Timedelta(days=10)).strftime("%Y%m%d")
+    e_str = (pd.Timestamp.today() + pd.Timedelta(days=1)).strftime("%Y%m%d")
+    out: dict[str, pd.Series] = {}
+    total = len(codes)
+    print(f"  取 {total} 只的价格序列（约 {total * (sleep + 0.5):.0f} 秒）...",
+          file=sys.stderr, flush=True)
+
+    for i, c in enumerate(codes, 1):
+        try:
+            d = ak.stock_zh_a_hist(symbol=c, period="daily",
+                                   start_date=s_str, end_date=e_str, adjust="hfq")
+            dcol = next((x for x in d.columns if "日期" in str(x)), None)
+            ccol = next((x for x in d.columns if "收盘" in str(x)), None)
+            if dcol and ccol and len(d):
+                ser = pd.Series(pd.to_numeric(d[ccol], errors="coerce").values,
+                                index=pd.to_datetime(d[dcol]))
+                out[c] = ser.sort_index()
+        except Exception:  # noqa: BLE001 - 单只失败不中断整批
+            pass
+        print(f"\r    {i}/{total}", end="", file=sys.stderr, flush=True)
+        time.sleep(sleep)
+    print("", file=sys.stderr, flush=True)
+    return out
+
+
+def journal_outcomes(j: "pd.DataFrame", horizon: int = 20) -> "pd.DataFrame":
+    """把每笔事前承诺对上它之后的实际收益。
+
+    收益口径：记录日的下一个交易日收盘 → 再往后 horizon 个交易日收盘。
+    用下一日而非当日，因为你写日志时当日行情已经走完了。
+    卖出方向取负号：卖出后跌了才算你对。
+    """
+    codes = sorted(j["code"].astype(str).unique())
+    prices = fetch_returns_for_journal(codes, str(j["date"].min().date()), horizon)
+
+    rows = []
+    for _, r in j.iterrows():
+        ser = prices.get(str(r["code"]))
+        if ser is None or ser.empty:
+            continue
+        after = ser[ser.index > pd.Timestamp(r["date"])]
+        if len(after) < horizon + 1:
+            continue          # 还没走满 horizon，不能算
+        entry = float(after.iloc[0])
+        exit_ = float(after.iloc[horizon])
+        if entry <= 0:
+            continue
+        ret = exit_ / entry - 1
+        if str(r.get("side", "buy")).lower() == "sell":
+            ret = -ret        # 卖出后跌了才算对
+        rows.append({**r.to_dict(), "fwd_ret": ret})
+    return pd.DataFrame(rows)
+
+
+def cmd_review(args: list[str] | None = None) -> None:
     """纪律复盘：系统信号 vs 临时起意，到底哪个在赚钱。"""
     from .review.journal import Journal
 
+    args = args or []
+    horizon = 20
+    for i, a in enumerate(args):
+        if a in ("--horizon", "-h") and i + 1 < len(args):
+            try:
+                horizon = int(args[i + 1])
+            except ValueError:
+                pass
+    skip_prices = "--no-prices" in args
+
     j = Journal().load()
     if j.empty:
-        print("journal.jsonl 还是空的。先用 `log` 记几笔。")
+        print("journal.jsonl 还是空的。先用 `artemis log` 记几笔。")
         return
 
     print(f"共 {len(j)} 笔记录，{j['date'].min().date()} ~ {j['date'].max().date()}\n")
     print("按来源分布：")
     print(j.groupby("source").agg(笔数=("code", "size"),
                                   平均仓位=("size_pct", "mean")).round(3).to_string())
-    disc = float((j["source"] == "discretionary").mean())
-    print(f"\n临时起意占比 {disc:.1%}  {'← 超过 10%，执行纪律是你的主要漏洞' if disc > 0.10 else '✓'}")
 
+    disc = float((j["source"] == "discretionary").mean())
+    print(f"\n临时起意占比 {disc:.1%}  "
+          f"{'← 超过 10%，执行纪律是你的主要漏洞' if disc > 0.10 else '✓'}")
     if "emotion" in j:
         bad = float(j["emotion"].isin(["fomo", "revenge"]).mean())
         print(f"冲动交易占比 {bad:.1%}  {'← 超过 5%' if bad > 0.05 else '✓'}")
 
-    print("\n要对上实际收益，需要行情数据：")
-    print("  from artemis.review.journal import Journal, summarize_by_source")
-    print("  summarize_by_source(Journal().outcome_analysis(trades, bars))")
+    if skip_prices:
+        print("\n（--no-prices：跳过实际收益对账）")
+        return
+
+    # ---------- 对上实际收益 ----------
+    print(f"\n对账实际收益（{horizon} 个交易日前瞻）")
+    try:
+        oc = journal_outcomes(j, horizon)
+    except RuntimeError as e:
+        print(f"  跳过：{e}")
+        return
+
+    if oc.empty:
+        print(f"  还没有走满 {horizon} 个交易日的记录。"
+              f"最早那笔是 {j['date'].min().date()}，再等等。")
+        return
+
+    g = oc.groupby("source")["fwd_ret"]
+    tbl = pd.DataFrame({
+        "笔数": g.size(),
+        "平均收益": g.mean().mul(100).round(2),
+        "中位数": g.median().mul(100).round(2),
+        "胜率": g.apply(lambda x: (x > 0).mean()).mul(100).round(1),
+        "最差": g.min().mul(100).round(2),
+    })
+    print(tbl.to_string())
+
+    n_sys = int((oc["source"] == "system").sum())
+    n_dis = int((oc["source"] == "discretionary").sum())
+
+    print()
+    if n_sys and n_dis:
+        gap = float(oc[oc.source == "system"]["fwd_ret"].mean()
+                    - oc[oc.source == "discretionary"]["fwd_ret"].mean())
+        print(f"系统信号 − 临时起意 = {gap * 100:+.2f}pp / {horizon}日")
+        # 样本量诚实提示：这是整个功能最容易被误读的地方
+        if min(n_sys, n_dis) < 20:
+            print(f"  ⚠ 样本太小（system {n_sys} 笔 / discretionary {n_dis} 笔），"
+                  f"这个差值主要是噪音，不要据此下结论。")
+            print(f"    每组至少 20 笔才开始有参考价值，30+ 笔才比较可靠。")
+        elif gap < 0:
+            print("  你的临时起意平均跑赢了系统信号。两种可能："
+                  "系统信号确实不行，或者你恰好赶上一段顺风。再攒些样本。")
+        else:
+            print(f"  按这个差值，每笔临时起意平均让你少赚 {abs(gap)*100:.2f}pp。")
+    else:
+        have = "system" if n_sys else "discretionary"
+        print(f"  只有 {have} 一类记录（{max(n_sys, n_dis)} 笔），无法对比。")
+        print(f"  这个功能的价值全在对比上 —— 两类都要有记录才看得出差距。")
 
 
 def cmd_audit(args: list[str]) -> None:
@@ -493,7 +619,7 @@ def main(argv: list[str] | None = None) -> int | None:
     elif cmd == "log":
         cmd_log()
     elif cmd == "review":
-        cmd_review()
+        cmd_review(argv[1:])
     elif cmd == "audit":
         cmd_audit(argv[1:])
     else:

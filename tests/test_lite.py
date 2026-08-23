@@ -154,3 +154,116 @@ def test_check_exposes_adv20_failure_count(snap):
     """失败数要透出到结果上，否则调用方无从判断 ✓ 的含金量。"""
     df = check(["600519"], snapshot=snap, with_adv20=False)
     assert "adv20_failed" in df.attrs
+
+
+# ---------------------------------------------------------------- 收益对账
+def _fake_akshare(monkeypatch, drift_map: dict[str, float]):
+    import sys
+    import types
+
+    import numpy as np
+
+    fake = types.ModuleType("akshare")
+
+    def hist(symbol=None, **kw):
+        rng = np.random.default_rng(abs(hash(symbol)) % 10000)
+        dates = pd.bdate_range("2026-04-01", "2026-08-20")
+        d = drift_map.get(symbol, 0.0)
+        px = 20 * np.cumprod(1 + rng.normal(d, 0.012, len(dates)))
+        return pd.DataFrame({"日期": dates.strftime("%Y-%m-%d"), "收盘": px})
+
+    fake.stock_zh_a_hist = hist
+    monkeypatch.setitem(sys.modules, "akshare", fake)
+
+
+def _journal_df(n=10, source="system", code="600000", start="2026-05-01", side="buy"):
+    return pd.DataFrame([{
+        "date": pd.Timestamp(start) + pd.Timedelta(days=i * 3),
+        "code": code, "side": side, "size_pct": 0.05, "source": source,
+        "thesis": "x" * 20, "invalidation": "y" * 10,
+        "expected_holding_days": 20, "emotion": "calm",
+    } for i in range(n)])
+
+
+def test_outcomes_computed_from_next_day(monkeypatch):
+    """收益从记录日的**下一个**交易日算起。
+
+    写日志时当日行情已经走完，用当日收盘等于偷跑了一天。
+    """
+    from artemis.lite import journal_outcomes
+
+    _fake_akshare(monkeypatch, {"600000": 0.002})
+    oc = journal_outcomes(_journal_df(6), horizon=10)
+    assert not oc.empty
+    assert "fwd_ret" in oc.columns
+
+
+def test_sell_side_return_is_inverted(monkeypatch):
+    """卖出后跌了才算你对 —— 符号搞反会让复盘结论完全颠倒。"""
+    from artemis.lite import journal_outcomes
+
+    _fake_akshare(monkeypatch, {"600000": 0.004})   # 明显上涨
+    buy = journal_outcomes(_journal_df(6, side="buy"), horizon=10)
+    sell = journal_outcomes(_journal_df(6, side="sell"), horizon=10)
+    assert buy["fwd_ret"].mean() > 0
+    assert sell["fwd_ret"].mean() < 0, "上涨行情里卖出应记为负收益"
+
+
+def test_immature_records_excluded(monkeypatch):
+    """还没走满 horizon 的记录必须排除，不能用不完整的窗口凑数。"""
+    from artemis.lite import journal_outcomes
+
+    _fake_akshare(monkeypatch, {"600000": 0.001})
+    recent = _journal_df(4, start="2026-08-18")     # 离数据末尾太近
+    oc = journal_outcomes(recent, horizon=20)
+    assert oc.empty
+
+
+def test_review_warns_on_small_sample(monkeypatch, capsys, tmp_path):
+    """小样本必须明确告警。
+
+    这是整个功能最容易被误读的地方：两组各几笔时的差值全是噪音，
+    但数字摆在那里，人就会当结论用。
+    """
+    import os
+
+    from artemis.lite import cmd_review
+    from artemis.review.journal import Journal
+
+    os.chdir(tmp_path)
+    _fake_akshare(monkeypatch, {"600001": 0.003, "600002": -0.003})
+    j = pd.concat([
+        _journal_df(6, source="system", code="600001"),
+        _journal_df(5, source="discretionary", code="600002"),
+    ])
+    with open(tmp_path / "journal.jsonl", "w", encoding="utf-8") as f:
+        for _, r in j.iterrows():
+            d = r.to_dict()
+            d["date"] = str(d["date"].date())
+            f.write(pd.io.json.ujson_dumps(d) if False else __import__("json").dumps(d, ensure_ascii=False) + "\n")
+
+    cmd_review([])
+    out = capsys.readouterr().out
+    assert "样本太小" in out
+    assert "不要据此下结论" in out
+
+
+def test_review_says_so_when_only_one_source(monkeypatch, capsys, tmp_path):
+    """只有一类记录时说明无法对比 —— 这个功能的价值全在对比上。"""
+    import json
+    import os
+
+    from artemis.lite import cmd_review
+
+    os.chdir(tmp_path)
+    _fake_akshare(monkeypatch, {"600001": 0.002})
+    j = _journal_df(8, source="system", code="600001")
+    with open(tmp_path / "journal.jsonl", "w", encoding="utf-8") as f:
+        for _, r in j.iterrows():
+            d = r.to_dict()
+            d["date"] = str(d["date"].date())
+            f.write(json.dumps(d, ensure_ascii=False) + "\n")
+
+    cmd_review([])
+    out = capsys.readouterr().out
+    assert "无法对比" in out
