@@ -124,3 +124,33 @@ def test_low_price_rule():
                      "float_mv": 40e8, "turnover_rate": 2.0})
     mines = {m.rule: m for m in check_one(row, GuardConfig())}
     assert mines["低价股（面值退市）"].hit
+
+
+# ---------------------------------------------------------------- 静默失效
+def test_adv20_counts_failures_instead_of_swallowing(monkeypatch):
+    """全部拉取失败时必须计数并告警。
+
+    原实现是 except: pass，用户只会看到"流动性: 未检"，
+    分不清是"没查"还是"查了但全失败"。这正是本项目一直在防的
+    静默失效，而它曾经就出在这个函数里。
+    """
+    import sys
+    import types
+
+    fake = types.ModuleType("akshare")
+
+    def boom(**kw):
+        raise RuntimeError("模拟限频")
+    fake.stock_zh_a_hist = boom
+    monkeypatch.setitem(sys.modules, "akshare", fake)
+
+    from artemis.lite import fetch_adv20
+    out, failed = fetch_adv20(["600519", "000001"], sleep=0.0, progress=False)
+    assert out == {}
+    assert failed == 2, "失败必须被计数，不能静默吞掉"
+
+
+def test_check_exposes_adv20_failure_count(snap):
+    """失败数要透出到结果上，否则调用方无从判断 ✓ 的含金量。"""
+    df = check(["600519"], snapshot=snap, with_adv20=False)
+    assert "adv20_failed" in df.attrs

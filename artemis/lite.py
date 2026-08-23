@@ -56,7 +56,10 @@ def fetch_snapshot() -> pd.DataFrame:
     except ImportError as e:
         raise RuntimeError("请先 pip install akshare") from e
 
+    import sys
+    print("  拉取全市场快照（约 5400 只，5-15 秒）...", file=sys.stderr, flush=True)
     df = ak.stock_zh_a_spot_em()
+    print(f"\r    已取 {len(df)} 只" + " " * 20, file=sys.stderr, flush=True)
     return normalize_snapshot(df)
 
 
@@ -85,31 +88,62 @@ def normalize_snapshot(df: pd.DataFrame) -> pd.DataFrame:
     return out[SNAPSHOT_COLS]
 
 
-def fetch_adv20(codes: list[str], sleep: float = 0.2) -> dict[str, float]:
+def fetch_adv20(codes: list[str], sleep: float = 0.2,
+                progress: bool = True) -> tuple[dict[str, float], int]:
     """取 20 日均成交额。快照里没有，只能逐只拉历史。
 
-    自选股一般几十只，可以接受；不要拿它跑全市场。
+    返回 (结果字典, 失败数)。
+
+    两个必须处理的事：
+    1. **进度输出**。逐只拉取 + 限速，20 只要 30-60 秒。没有输出的话
+       用户会以为程序卡死然后 Ctrl-C —— 然后再也不用这个工具了。
+    2. **失败要计数**。原来是 except: pass，全部失败时用户只看到
+       "流动性: 未检"，分不清是"没查"还是"查了但失败"。
+       这正是本项目一直在防的静默失效，而它就出在我自己的代码里。
     """
     try:
         import akshare as ak
     except ImportError as e:
         raise RuntimeError("请先 pip install akshare") from e
+    import sys
     import time
 
     end = date.today().strftime("%Y%m%d")
     start = (pd.Timestamp.today() - pd.Timedelta(days=60)).strftime("%Y%m%d")
     out: dict[str, float] = {}
-    for c in codes:
+    failed = 0
+    total = len(codes)
+
+    if progress and total:
+        print(f"  取 20 日均成交额（{total} 只，约 {total * (sleep + 0.5):.0f} 秒）...",
+              file=sys.stderr, flush=True)
+
+    for i, c in enumerate(codes, 1):
         try:
             d = ak.stock_zh_a_hist(symbol=c, period="daily",
                                    start_date=start, end_date=end, adjust="")
             col = next((x for x in d.columns if "成交额" in str(x)), None)
             if col is not None and len(d):
                 out[c] = float(pd.to_numeric(d[col], errors="coerce").tail(20).mean())
-        except Exception:  # noqa: BLE001 - 单只失败不该中断整批
-            pass
+            else:
+                failed += 1
+        except Exception:  # noqa: BLE001 - 单只失败不该中断整批，但要计数
+            failed += 1
+        if progress and total:
+            print(f"\r    {i}/{total}", end="", file=sys.stderr, flush=True)
         time.sleep(sleep)
-    return out
+
+    if progress and total:
+        # 直接换行而不是 \r 清行：清行技巧在管道/日志里会渲染成乱码，
+        # 而这个输出很可能被重定向到文件（定时任务）
+        print("", file=sys.stderr, flush=True)
+        if failed:
+            print(f"  ⚠ {failed}/{total} 只没取到成交额，这些票的流动性检查会跳过",
+                  file=sys.stderr, flush=True)
+            if failed == total:
+                print("  ⚠ 全部失败 —— 多半是被限频了。等几分钟再试，"
+                      "或先用 --no-adv20 跳过流动性检查", file=sys.stderr, flush=True)
+    return out, failed
 
 
 # --------------------------------------------------------------------------
@@ -190,9 +224,10 @@ def check(codes: list[str], snapshot: pd.DataFrame | None = None,
     sub = snap[snap["code"].isin(codes)]
     missing = sorted(set(codes) - set(sub["code"]))
 
-    adv = {}
+    adv: dict[str, float] = {}
+    adv_failed = 0
     if with_adv20 and snapshot is None:
-        adv = fetch_adv20(list(sub["code"]))
+        adv, adv_failed = fetch_adv20(list(sub["code"]))
 
     rows = []
     for _, r in sub.iterrows():
@@ -209,6 +244,7 @@ def check(codes: list[str], snapshot: pd.DataFrame | None = None,
     df = pd.DataFrame(rows)
     if missing:
         df.attrs["missing"] = missing
+    df.attrs["adv20_failed"] = adv_failed
     return df
 
 
@@ -327,18 +363,23 @@ def _watchlist_path() -> Path:
 
 
 def cmd_check(codes: list[str]) -> None:
+    no_adv = "--no-adv20" in codes
+    codes = [c for c in codes if not c.startswith("--")]
     if not codes:
-        print("用法: python -m artemis.lite check 600519 000001 ...")
+        print("用法: python -m artemis.lite check 600519 000001 ... [--no-adv20]")
         return
-    df = check(codes)
+    df = check(codes, with_adv20=not no_adv)
     print(df.to_string(index=False))
     if df.attrs.get("missing"):
         print(f"\n未在快照中找到（可能已退市或代码有误）：{df.attrs['missing']}")
     n_block = int((df["结论"] == "❌ 排除").sum())
     print(f"\n{len(df)} 只中 {n_block} 只应排除。清单之外的票一律不碰。")
+    if df.attrs.get("adv20_failed"):
+        print(f"注意：{df.attrs['adv20_failed']} 只的流动性未能检查，"
+              f"它们的 ✓ 通过含金量要打折。")
 
 
-def cmd_watch() -> None:
+def cmd_watch(extra: list[str] | None = None) -> None:
     p = _watchlist_path()
     if not p.exists():
         p.write_text("# 每行一个 6 位代码，# 开头为注释\n600519\n000001\n", encoding="utf-8")
@@ -346,7 +387,7 @@ def cmd_watch() -> None:
         return
     codes = [l.strip() for l in p.read_text(encoding="utf-8").splitlines()
              if l.strip() and not l.startswith("#")]
-    cmd_check(codes)
+    cmd_check(codes + (extra or []))
 
 
 def cmd_log() -> None:
@@ -448,7 +489,7 @@ def main(argv: list[str] | None = None) -> int | None:
     if cmd == "check":
         cmd_check(argv[1:])
     elif cmd == "watch":
-        cmd_watch()
+        cmd_watch(argv[1:])
     elif cmd == "log":
         cmd_log()
     elif cmd == "review":
