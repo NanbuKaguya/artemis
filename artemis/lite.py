@@ -422,12 +422,45 @@ def cmd_log() -> None:
         print(f"\n已记录到 journal.jsonl（{code} {side} {size:.1%}）")
 
 
-def fetch_returns_for_journal(
-    codes: list[str], start: str, horizon: int = 20, sleep: float = 0.25
-) -> dict[str, "pd.Series"]:
-    """为日志里的股票拉取价格序列，用于计算事后收益。
+PRICE_CACHE = "data_cache/journal_prices.parquet"
 
-    只拉日志里出现过的代码，不是全市场 —— 通常几十只，可接受。
+
+def _load_price_cache(path: str = PRICE_CACHE) -> "pd.DataFrame":
+    p = Path(path)
+    if not p.exists():
+        return pd.DataFrame(columns=["code", "date", "close"])
+    try:
+        return pd.read_parquet(p)
+    except Exception:  # noqa: BLE001 - 缓存坏了不该让复盘失败，丢掉重建就行
+        return pd.DataFrame(columns=["code", "date", "close"])
+
+
+def _save_price_cache(df: "pd.DataFrame", path: str = PRICE_CACHE) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    df.sort_values(["code", "date"]).drop_duplicates(
+        ["code", "date"], keep="last").to_parquet(p, index=False)
+
+
+def fetch_returns_for_journal(
+    codes: list[str], start: str, horizon: int = 20, sleep: float = 0.25,
+    cache_path: str = PRICE_CACHE, progress: bool = True,
+    need_through: "pd.Timestamp | None" = None,
+) -> dict[str, "pd.Series"]:
+    """为日志里的股票拉取价格序列，带增量缓存。
+
+    为什么必须缓存：日志会越攒越多。攒到 40 只票时，每次复盘都要重新
+    下载 40 只的完整历史 —— 40 秒起步，而且下的是没变过的数据。
+    然后你就不跑复盘了，而复盘恰恰是这套东西最值钱的部分。
+
+    **为什么后复权可以安全缓存**：
+    后复权以上市首日为锚，新的除权除息只影响除权日之后的价格，
+    历史价格不变，所以缓存是 append-only 的。
+    前复权正相反 —— 以最新价为锚，一次分红会改写全部历史价，
+    缓存下来的旧数据会和新数据对不上。这也是本函数用 hfq 的原因之一。
+
+    仍然做重叠校验：不同数据源的复权算法有差异，东财也可能重算。
+    重叠区对不上就整只重拉，代价小但能挡住静默的数据错位。
     """
     try:
         import akshare as ak
@@ -436,28 +469,100 @@ def fetch_returns_for_journal(
     import sys
     import time
 
-    s_str = (pd.Timestamp(start) - pd.Timedelta(days=10)).strftime("%Y%m%d")
-    e_str = (pd.Timestamp.today() + pd.Timedelta(days=1)).strftime("%Y%m%d")
-    out: dict[str, pd.Series] = {}
-    total = len(codes)
-    print(f"  取 {total} 只的价格序列（约 {total * (sleep + 0.5):.0f} 秒）...",
-          file=sys.stderr, flush=True)
+    cache = _load_price_cache(cache_path)
+    if not cache.empty:
+        cache["date"] = pd.to_datetime(cache["date"])
+    cached_end = (cache.groupby("code")["date"].max().to_dict()
+                  if not cache.empty else {})
 
-    for i, c in enumerate(codes, 1):
+    need_start = pd.Timestamp(start) - pd.Timedelta(days=10)
+    today = pd.Timestamp.today().normalize()
+
+    # 只需要覆盖到"最新那笔记录走满 horizon 的日子"，不是覆盖到今天。
+    # 按"距今几天"判断过期是错的口径：一笔三个月前的记录早就走满窗口了，
+    # 再拉新数据对它的收益没有任何影响，纯属浪费请求。
+    # horizon 是交易日，换算成日历日约 ×1.5，再留 3 天缓冲。
+    if need_through is None:
+        need_through = today
+    need_through = min(pd.Timestamp(need_through), today)
+
+    to_fetch: list[tuple[str, pd.Timestamp, bool]] = []   # (code, from, 是否全量)
+    for c in codes:
+        end = cached_end.get(c)
+        if end is None:
+            to_fetch.append((c, need_start, True))
+        elif end < need_through:
+            # 留 5 天重叠用于一致性校验
+            to_fetch.append((c, end - pd.Timedelta(days=5), False))
+
+    hit = len(codes) - len(to_fetch)
+    if progress:
+        if to_fetch:
+            print(f"  价格缓存命中 {hit}/{len(codes)}，需拉取 {len(to_fetch)} 只"
+                  f"（约 {len(to_fetch) * (sleep + 0.5):.0f} 秒）...",
+                  file=sys.stderr, flush=True)
+        else:
+            print(f"  价格缓存命中 {hit}/{len(codes)}，无需联网",
+                  file=sys.stderr, flush=True)
+
+    new_rows = []
+    for i, (c, frm, full) in enumerate(to_fetch, 1):
         try:
-            d = ak.stock_zh_a_hist(symbol=c, period="daily",
-                                   start_date=s_str, end_date=e_str, adjust="hfq")
+            d = ak.stock_zh_a_hist(
+                symbol=c, period="daily",
+                start_date=frm.strftime("%Y%m%d"),
+                end_date=(today + pd.Timedelta(days=1)).strftime("%Y%m%d"),
+                adjust="hfq")
             dcol = next((x for x in d.columns if "日期" in str(x)), None)
             ccol = next((x for x in d.columns if "收盘" in str(x)), None)
-            if dcol and ccol and len(d):
-                ser = pd.Series(pd.to_numeric(d[ccol], errors="coerce").values,
-                                index=pd.to_datetime(d[dcol]))
-                out[c] = ser.sort_index()
+            if not (dcol and ccol and len(d)):
+                continue
+            fresh = pd.DataFrame({
+                "code": c,
+                "date": pd.to_datetime(d[dcol]),
+                "close": pd.to_numeric(d[ccol], errors="coerce"),
+            }).dropna()
+
+            if not full and not cache.empty:
+                # 重叠区一致性校验：对不上说明整条序列被重算了
+                old = cache[cache["code"] == c].set_index("date")["close"]
+                ov = fresh.set_index("date")["close"].reindex(old.index).dropna()
+                if len(ov) >= 3:
+                    ref = old.reindex(ov.index)
+                    if not np.allclose(ov.values, ref.values, rtol=1e-3):
+                        if progress:
+                            print(f"\r    {c} 复权序列已变，整只重拉",
+                                  file=sys.stderr, flush=True)
+                        cache = cache[cache["code"] != c]
+                        d2 = ak.stock_zh_a_hist(
+                            symbol=c, period="daily",
+                            start_date=need_start.strftime("%Y%m%d"),
+                            end_date=(today + pd.Timedelta(days=1)).strftime("%Y%m%d"),
+                            adjust="hfq")
+                        fresh = pd.DataFrame({
+                            "code": c,
+                            "date": pd.to_datetime(d2[dcol]),
+                            "close": pd.to_numeric(d2[ccol], errors="coerce"),
+                        }).dropna()
+            new_rows.append(fresh)
         except Exception:  # noqa: BLE001 - 单只失败不中断整批
             pass
-        print(f"\r    {i}/{total}", end="", file=sys.stderr, flush=True)
+        if progress:
+            print(f"\r    {i}/{len(to_fetch)}", end="", file=sys.stderr, flush=True)
         time.sleep(sleep)
-    print("", file=sys.stderr, flush=True)
+
+    if to_fetch and progress:
+        print("", file=sys.stderr, flush=True)
+
+    if new_rows:
+        cache = pd.concat([cache, *new_rows], ignore_index=True)
+        _save_price_cache(cache, cache_path)
+
+    out: dict[str, pd.Series] = {}
+    for c in codes:
+        sub = cache[cache["code"] == c]
+        if not sub.empty:
+            out[c] = sub.set_index("date")["close"].sort_index()
     return out
 
 
@@ -469,7 +574,12 @@ def journal_outcomes(j: "pd.DataFrame", horizon: int = 20) -> "pd.DataFrame":
     卖出方向取负号：卖出后跌了才算你对。
     """
     codes = sorted(j["code"].astype(str).unique())
-    prices = fetch_returns_for_journal(codes, str(j["date"].min().date()), horizon)
+    # 只需覆盖到最新一笔记录走满 horizon 的日子。更早的记录早已成熟，
+    # 拉更新的数据对它们的收益毫无影响。
+    need_through = (pd.Timestamp(j["date"].max())
+                    + pd.Timedelta(days=int(horizon * 1.5) + 3))
+    prices = fetch_returns_for_journal(
+        codes, str(j["date"].min().date()), horizon, need_through=need_through)
 
     rows = []
     for _, r in j.iterrows():

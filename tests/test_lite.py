@@ -267,3 +267,92 @@ def test_review_says_so_when_only_one_source(monkeypatch, capsys, tmp_path):
     cmd_review([])
     out = capsys.readouterr().out
     assert "无法对比" in out
+
+
+# ---------------------------------------------------------------- 价格缓存
+def _cached_akshare(monkeypatch, calls: list):
+    """确定性价格源：后复权序列不随重新拉取而改变（这是 hfq 的性质）。"""
+    import sys
+    import types
+
+    import numpy as np
+
+    base = pd.Series(
+        20 * np.cumprod(1 + np.random.default_rng(1).normal(0.001, 0.01, 4000)),
+        index=pd.bdate_range("2025-01-01", periods=4000))
+
+    fake = types.ModuleType("akshare")
+
+    def hist(symbol=None, start_date=None, end_date=None, **kw):
+        calls.append((symbol, start_date))
+        beg = pd.Timestamp(start_date) if start_date else pd.Timestamp("2025-01-01")
+        dates = pd.bdate_range(max(beg, pd.Timestamp("2025-01-01")),
+                               pd.Timestamp.today().normalize())
+        if len(dates) == 0:
+            return pd.DataFrame()
+        seg = base.reindex(dates).ffill()
+        return pd.DataFrame({"日期": dates.strftime("%Y-%m-%d"), "收盘": seg.values})
+
+    fake.stock_zh_a_hist = hist
+    monkeypatch.setitem(sys.modules, "akshare", fake)
+
+
+def test_price_cache_avoids_refetch_for_matured_records(monkeypatch, tmp_path):
+    """已成熟的记录不该每次复盘都重新联网。
+
+    日志会越攒越多。若每次都全量重拉，攒到 40 只时每周要等 40 秒
+    下载没变过的数据 —— 然后用户就不跑复盘了，而复盘是这套东西
+    最值钱的部分。
+    """
+    from artemis.lite import fetch_returns_for_journal
+
+    calls: list = []
+    _cached_akshare(monkeypatch, calls)
+    cp = str(tmp_path / "px.parquet")
+    codes = ["600000", "600001", "600002"]
+    matured = pd.Timestamp.today().normalize() - pd.Timedelta(days=100)
+
+    fetch_returns_for_journal(codes, "2025-06-01", cache_path=cp, sleep=0.0,
+                              progress=False, need_through=matured)
+    assert len(calls) == 3, "冷缓存应拉取全部"
+
+    calls.clear()
+    out = fetch_returns_for_journal(codes, "2025-06-01", cache_path=cp, sleep=0.0,
+                                    progress=False, need_through=matured)
+    assert calls == [], "记录已成熟时不该再联网"
+    assert len(out) == 3, "仍要能从缓存返回全部序列"
+
+
+def test_price_cache_fetches_only_tail_for_new_records(monkeypatch, tmp_path):
+    """有新记录时只补尾部，不重拉整条历史。"""
+    from artemis.lite import fetch_returns_for_journal
+
+    calls: list = []
+    _cached_akshare(monkeypatch, calls)
+    cp = str(tmp_path / "px.parquet")
+    old = pd.Timestamp.today().normalize() - pd.Timedelta(days=100)
+
+    fetch_returns_for_journal(["600000"], "2025-06-01", cache_path=cp, sleep=0.0,
+                              progress=False, need_through=old)
+    calls.clear()
+    fetch_returns_for_journal(["600000"], "2025-06-01", cache_path=cp, sleep=0.0,
+                              progress=False,
+                              need_through=pd.Timestamp.today().normalize())
+    assert len(calls) == 1
+    frm = pd.Timestamp(calls[0][1])
+    assert frm > pd.Timestamp("2025-06-01"), "应从缓存末尾附近开始，而非整条重拉"
+
+
+def test_corrupt_cache_rebuilds_instead_of_crashing(monkeypatch, tmp_path):
+    """缓存文件损坏时重建，而不是让复盘整个失败。"""
+    from artemis.lite import _load_price_cache, fetch_returns_for_journal
+
+    cp = tmp_path / "px.parquet"
+    cp.write_text("这不是 parquet", encoding="utf-8")
+    assert _load_price_cache(str(cp)).empty
+
+    calls: list = []
+    _cached_akshare(monkeypatch, calls)
+    out = fetch_returns_for_journal(["600000"], "2025-06-01", cache_path=str(cp),
+                                    sleep=0.0, progress=False)
+    assert len(out) == 1, "坏缓存应被丢弃并重建"
