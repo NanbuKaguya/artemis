@@ -121,9 +121,20 @@ class RecentStats:
     last_close: float = float("nan")
     prev_close: float = float("nan")
     last_amount: float = float("nan")
+    reported_pct: float = float("nan")   # 数据源直接给的昨日涨跌幅（%），优先于自算
 
     @property
     def last_pct(self) -> float:
+        """昨日涨跌幅（%）。优先用数据源直接给的那一列。
+
+        为什么不自己用 收盘/昨收-1 算：除权除息日的涨跌幅是对着
+        **除权参考价**算的，不是对着前一日收盘价。用不复权收盘价
+        相除，会在除息日凭空算出一根大阴线 —— 于是那天真正的涨停
+        被漏掉，而漏掉的恰恰是分红后资金最活跃的票。
+        交易所报的那一列已经处理好了这件事。
+        """
+        if np.isfinite(self.reported_pct):
+            return float(self.reported_pct)
         if not (self.prev_close and self.prev_close > 0):
             return float("nan")
         return (self.last_close / self.prev_close - 1) * 100
@@ -160,6 +171,7 @@ def fetch_recent_stats(codes: list[str], sleep: float = 0.2,
             dcol = next((x for x in d.columns if "日期" in str(x)), None)
             ccol = next((x for x in d.columns if "收盘" in str(x)), None)
             acol = next((x for x in d.columns if "成交额" in str(x)), None)
+            pcol = next((x for x in d.columns if "涨跌幅" in str(x)), None)
             if not (dcol and ccol and len(d)):
                 failed += 1
             else:
@@ -173,6 +185,9 @@ def fetch_recent_stats(codes: list[str], sleep: float = 0.2,
                     last_close=float(closes.iloc[-1]),
                     prev_close=float(closes.iloc[-2]) if len(closes) >= 2 else float("nan"),
                     last_amount=float(amts.iloc[-1]) if len(amts) else float("nan"),
+                    reported_pct=(
+                        float(pd.to_numeric(dd[pcol], errors="coerce").iloc[-1])
+                        if pcol else float("nan")),
                 )
         except Exception:  # noqa: BLE001 - 单只失败不该中断整批，但要计数
             failed += 1

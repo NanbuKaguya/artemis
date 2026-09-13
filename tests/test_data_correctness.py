@@ -393,3 +393,41 @@ def test_no_hardcoded_main_board_clip_remains():
     for rel in ("artemis/regime/market_state.py", "artemis/review/attribution.py"):
         body = (ROOT / rel).read_text(encoding="utf-8")
         assert "clip(-0.11, 0.11)" not in body, f"{rel} 仍有写死的主板截断"
+
+
+# --------------------------------------------------------------------------
+# 11. 除权除息日的涨跌幅不能自己用收盘价相除
+# --------------------------------------------------------------------------
+def test_prev_pct_prefers_exchange_reported_value():
+    """除息日的涨跌幅是对着除权参考价算的，不是对着前一日收盘价。
+
+    错的时候会怎样：用不复权收盘价相除，除息日会凭空算出一根大阴线，
+    那天真正的涨停被漏掉 —— 而漏掉的恰恰是分红后资金最活跃的票。
+    """
+    from artemis.lite import RecentStats
+
+    # 10 元的票每股分红 1 元后涨停：除权参考价 9 元，收盘 9.9 元。
+    # 自算 = 9.9/10 - 1 = -1%，真实是 +10%。
+    st = RecentStats(adv20=3e8, last_date=pd.Timestamp("2026-09-11"),
+                     last_close=9.9, prev_close=10.0, last_amount=3e8,
+                     reported_pct=10.0)
+    assert st.last_pct == pytest.approx(10.0), "应采用交易所口径"
+
+    fallback = RecentStats(adv20=3e8, last_date=pd.Timestamp("2026-09-11"),
+                           last_close=11.0, prev_close=10.0, last_amount=3e8)
+    assert fallback.last_pct == pytest.approx(10.0), "没有该列时才自算"
+
+
+def test_ex_dividend_limit_up_is_not_missed():
+    """接上：这个差别直接决定昨日涨停这条规则命不命中。"""
+    from artemis.config import GuardConfig
+    from artemis.lite import RecentStats, check_one
+
+    mkt = pd.Timestamp("2026-09-11")
+    row = pd.Series({"code": "600000", "name": "浦发银行", "price": 9.9,
+                     "pct_chg": 0.0, "amount": 5e8, "total_mv": 3000e8,
+                     "float_mv": 3000e8, "turnover_rate": 1.0})
+    st = RecentStats(adv20=5e8, last_date=mkt, last_close=9.9,
+                     prev_close=10.0, last_amount=5e8, reported_pct=10.0)
+    mines = {m.rule: m for m in check_one(row, GuardConfig(), st, mkt)}
+    assert mines["昨日涨停（今日易高开）"].hit, "除息日涨停必须被拦下"
