@@ -19,8 +19,30 @@ import pandas as pd
 
 from ..config import GuardConfig
 
-# 规则签名：(bars, cfg) -> Series[bool]，True 表示"排除"
+# 规则签名：(bars, cfg) -> Series[boolean]，True 表示"排除"，pd.NA 表示"数据不足，未知"
 RuleFn = Callable[[pd.DataFrame, GuardConfig], pd.Series]
+
+
+def _cmp(values: pd.Series, op: str, threshold) -> pd.Series:
+    """保留"未知"语义的比较。
+
+    Python/pandas 的比较运算会把 NaN 吞成 False：
+        pd.Series([1e6, nan]) < 5e7   ->   [True, False]
+    对排雷规则来说这是**最危险的默认行为** —— "数据不足"被当成"没踩雷"，
+    于是一只上市不足 20 天、20 日均额还是 NaN 的票，
+    顺利通过了流动性检查。而它恰恰是流动性最不可测的那类。
+
+    本函数让缺失传播为 pd.NA，由引擎统一决定怎么处理（默认按排除，
+    但会单独记账，让你分得清"真踩雷"和"没数据"）。
+    """
+    res = {"<": values < threshold, ">": values > threshold,
+           "<=": values <= threshold, ">=": values >= threshold}[op]
+    return res.astype("boolean").mask(values.isna())
+
+
+def _flag(values: pd.Series) -> pd.Series:
+    """把可能含缺失的布尔列转成保留 NA 的 boolean。"""
+    return values.astype("boolean")
 
 _REGISTRY: dict[str, RuleFn] = {}
 
@@ -41,22 +63,22 @@ def rule(name: str):
 def _st(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
     """ST/*ST：涨跌停只有 5%，流动性差，退市概率高，且是财务造假重灾区。"""
     if not cfg.exclude_st:
-        return pd.Series(False, index=bars.index)
-    return bars["is_st"].astype(bool)
+        return pd.Series(False, index=bars.index, dtype="boolean")
+    return _flag(bars["is_st"])
 
 
 @rule("suspended")
 def _suspended(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
     """停牌：买不进也卖不出。停牌股在回测里是最常见的未来函数来源。"""
     if not cfg.exclude_suspended:
-        return pd.Series(False, index=bars.index)
-    return bars["is_suspended"].astype(bool)
+        return pd.Series(False, index=bars.index, dtype="boolean")
+    return _flag(bars["is_suspended"])
 
 
 @rule("new_listing")
 def _new_listing(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
     """次新股：没有历史数据可算因子，且上市初期波动极大、估值虚高。"""
-    return bars["days_since_ipo"] < cfg.min_days_since_ipo
+    return _cmp(bars["days_since_ipo"], "<", cfg.min_days_since_ipo)
 
 
 @rule("illiquid")
@@ -71,7 +93,7 @@ def _illiquid(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
         .rolling(20, min_periods=10).mean().droplevel(0)
     )
     adv20 = adv20.reindex(bars.index)
-    return adv20 < cfg.min_adv20
+    return _cmp(adv20, "<", cfg.min_adv20)
 
 
 @rule("micro_cap")
@@ -81,7 +103,7 @@ def _micro_cap(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
     小市值曾是 A 股最强的因子之一，但它的超额收益里有很大一块是
     "壳价值"和"流动性溢价"，注册制+严退市之后这块正在系统性消失。
     """
-    return bars["total_mv"] < cfg.min_market_cap
+    return _cmp(bars["total_mv"], "<", cfg.min_market_cap)
 
 
 @rule("limit_up_chase")
@@ -95,22 +117,24 @@ def _limit_up_chase(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
         [price_limit_pct(c, bool(st)) for c, st in zip(codes, bars["is_st"].values)],
         index=bars.index,
     )
-    return ret >= lim - 0.005
+    return _cmp(ret, ">=", lim - 0.005)
 
 
 @rule("price_floor")
 def _price_floor(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
     """低价股：面值退市（连续 20 日收盘 < 1 元）的候选，且波动被最小变动
     单位放大（1 分钱在 2 元股上是 0.5%）。"""
-    return bars["close"] < 2.0
+    return _cmp(bars["close"], "<", 2.0)
 
 
 @rule("extreme_run_up")
 def _extreme_run_up(bars: pd.DataFrame, cfg: GuardConfig) -> pd.Series:
     """短期暴涨：20 日涨幅 > 60% 的票，均值回复的风险远大于动量延续。"""
     px = bars["close"].unstack("code")
-    runup = (px / px.shift(20) - 1).stack(future_stack=True)
-    return runup.reindex(bars.index).fillna(0) > 0.60
+    runup = (px / px.shift(20) - 1).stack(future_stack=True).reindex(bars.index)
+    # 注意：这里**不能** fillna(0)。上市不足 20 天时 runup 是未知，
+    # 填 0 等于断言"没暴涨"，而次新股恰恰是最容易暴涨的一类。
+    return _cmp(runup, ">", 0.60)
 
 
 def available_rules() -> list[str]:
@@ -126,10 +150,18 @@ class GuardResult:
     mask: pd.Series                 # True = 可交易（已通过全部排雷）
     detail: pd.DataFrame            # 每条规则的排除标记
     summary: pd.DataFrame           # 每条规则的剔除比例
+    no_data: pd.DataFrame | None = None   # 其中因"无数据"被排除的标记
 
     @property
     def tradable_ratio(self) -> float:
         return float(self.mask.mean())
+
+    @property
+    def no_data_ratio(self) -> float:
+        """因数据缺失而被排除的样本占比。高于 5% 就该查数据而不是信结论。"""
+        if self.no_data is None:
+            return float("nan")
+        return float((self.no_data.any(axis=1) & ~self.mask).mean())
 
 
 class Guard:
@@ -140,23 +172,31 @@ class Guard:
         self.rules = rules or available_rules()
 
     def apply(self, bars: pd.DataFrame) -> GuardResult:
-        detail = {}
+        detail, nan_detail = {}, {}
         for name in self.rules:
             fn = _REGISTRY[name]
-            m = fn(bars, self.cfg)
-            detail[name] = m.reindex(bars.index).fillna(True).astype(bool)
+            m = fn(bars, self.cfg).reindex(bars.index).astype("boolean")
+            # 缺数据时按"排除"处理（方向保守），但必须**单独记账**：
+            # rolling 窗口的前 N 天必然是 NaN，全算成"踩雷"会让样本前期的
+            # 可交易池被系统性压缩，而你分不清是真踩雷还是没数据。
+            nan_detail[name] = m.isna().fillna(True).astype(bool)
+            detail[name] = m.fillna(True).astype(bool)
+
         detail_df = pd.DataFrame(detail, index=bars.index)
+        nan_df = pd.DataFrame(nan_detail, index=bars.index)
         excluded = detail_df.any(axis=1)
 
         summary = pd.DataFrame({
             "excluded_pct": detail_df.mean().mul(100).round(2),
+            "of_which_no_data_pct": nan_df.mean().mul(100).round(2),
             "unique_excluded_pct": pd.Series({
                 n: float((detail_df[n] & ~detail_df.drop(columns=[n]).any(axis=1)).mean() * 100)
                 for n in detail_df.columns
             }).round(2),
         }).sort_values("excluded_pct", ascending=False)
 
-        return GuardResult(mask=~excluded, detail=detail_df, summary=summary)
+        return GuardResult(mask=~excluded, detail=detail_df,
+                           summary=summary, no_data=nan_df)
 
     # ----------------------------------------------------------------------
     def audit(self, bars: pd.DataFrame, horizon: int = 20) -> pd.DataFrame:

@@ -45,14 +45,25 @@ def check_position(pos: Position, today: date, cfg: RiskConfig | None = None) ->
     """单票风控检查。返回是否需要卖出及原因。"""
     cfg = cfg or RiskConfig()
     reasons = []
+
+    # 最新价读不到时，pnl_pct 是 NaN，而 `NaN <= -0.08` 求值为 False ——
+    # 于是止损、移动止盈两条全部静默失效，一只你根本看不到价格的票
+    # 会被判定为"无需处理"。风控上这是最坏的失效方式：
+    # 它不报错，只是什么都不做。
+    if not (np.isfinite(pos.current_price) and pos.current_price > 0):
+        return {"code": pos.code, "should_exit": False, "needs_attention": True,
+                "reasons": ["最新价缺失，风控无法判定 —— 请手工确认是否停牌或已退市"],
+                "pnl_pct": float("nan"), "drawdown_from_peak": float("nan")}
+
     if pos.pnl_pct <= -cfg.stop_loss_pct:
         reasons.append(f"止损：自成本价 {pos.pnl_pct:.1%}，已穿透 {-cfg.stop_loss_pct:.0%}")
     if pos.drawdown_from_peak <= -cfg.trailing_stop_pct:
         reasons.append(f"移动止盈：自最高价回撤 {pos.drawdown_from_peak:.1%}")
     if pos.holding_days(today) > cfg.max_holding_days:
         reasons.append(f"超期：已持有 {pos.holding_days(today)} 天，上限 {cfg.max_holding_days}")
-    return {"code": pos.code, "should_exit": bool(reasons), "reasons": reasons,
-            "pnl_pct": pos.pnl_pct, "drawdown_from_peak": pos.drawdown_from_peak}
+    return {"code": pos.code, "should_exit": bool(reasons), "needs_attention": False,
+            "reasons": reasons, "pnl_pct": pos.pnl_pct,
+            "drawdown_from_peak": pos.drawdown_from_peak}
 
 
 def check_portfolio(equity_curve: pd.Series, cfg: RiskConfig | None = None) -> dict:

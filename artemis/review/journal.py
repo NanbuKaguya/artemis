@@ -19,9 +19,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict, field
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pandas as pd
+
+
+CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass
@@ -67,7 +71,8 @@ class Journal:
         if errs and strict:
             return errs
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({**asdict(intent), "logged_at": datetime.now().isoformat()},
+            f.write(json.dumps({**asdict(intent),
+                                "logged_at": datetime.now(CN_TZ).isoformat(timespec="seconds")},
                                ensure_ascii=False) + "\n")
         return errs
 

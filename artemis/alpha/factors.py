@@ -190,12 +190,17 @@ def neutralize(s: pd.Series, bars: pd.DataFrame, by_industry: bool = True,
         return s
 
     def _resid(block: pd.DataFrame) -> pd.Series:
-        b = block.dropna(subset=["y"])
+        need = ["y"] + (["logmv"] if by_size else [])
+        # 市值缺失的行直接剔出回归样本，而不是填中位数。
+        # 填中位数等于把一只未知市值的票当成"中等市值"参与回归 ——
+        # 编一个值进去比承认不知道更糟：它会污染整个截面的回归系数，
+        # 而且那只票拿到的"中性化后因子值"是基于虚构前提算出来的。
+        b = block.dropna(subset=need)
         if len(b) < 20:
-            return block["y"]
+            return pd.Series(np.nan, index=block.index)
         X_parts = [np.ones((len(b), 1))]
         if by_size and "logmv" in b:
-            lv = b["logmv"].fillna(b["logmv"].median()).values.reshape(-1, 1)
+            lv = b["logmv"].values.reshape(-1, 1)
             X_parts.append((lv - lv.mean()) / (lv.std() or 1))
         if by_industry and "industry" in b:
             d = pd.get_dummies(b["industry"], drop_first=True).astype(float).values

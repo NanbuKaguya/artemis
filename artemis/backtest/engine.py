@@ -72,8 +72,16 @@ class Backtester:
 
         op, hi, lo, cl = W("open").values, W("high").values, W("low").values, W("close").values
         pc = W("prev_close").values
-        adj = W("adj_factor").fillna(1.0).values
-        st = W("is_st").fillna(False).values.astype(bool)
+        # 复权因子是阶梯函数，只在除权日跳变 —— 缺失时正确的补法是
+        # 按股票 ffill，而不是填 1.0。填 1.0 等于说"这天没有过任何除权"，
+        # 会让成本价和现价落在两套口径上，算出一段凭空的盈亏。
+        adj = W("adj_factor").ffill().fillna(1.0).values
+        # 缺失时一律往"更难成交"的方向取：
+        #   is_st 未知 -> 当成 ST（涨跌停更窄，更多单子打不掉）
+        #   停牌未知   -> 当成停牌
+        #   上市未知   -> 当成不可交易
+        # 回测的默认值必须偏悲观，否则你看到的净值曲线是数据缺失变出来的。
+        st = W("is_st").fillna(True).values.astype(bool)
         susp = W("is_suspended").fillna(True).values.astype(bool)
         alive = W("is_tradable").fillna(False).values.astype(bool)
         amt = W("amount").fillna(0.0).values
@@ -84,12 +92,20 @@ class Backtester:
 
         # --- 涨跌停价格网格 ---
         base_lim = np.array([price_limit_pct(c) for c in codes])
-        lim = np.where(st, np.where(base_lim > 0.15, 0.20, 0.05), base_lim[None, :])
+        # ST 只压缩主板的 10% -> 5%。创业板/科创板 ST 仍是 20%，
+        # 北交所 ST 仍是 30% —— 别把它们一律按 20% 处理。
+        st_lim = np.where(base_lim > 0.15, base_lim, 0.05)
+        lim = np.where(st, st_lim[None, :], base_lim[None, :])
         up_px = np.round(pc * (1 + lim), 2)
         dn_px = np.round(pc * (1 - lim), 2)
-        # 开盘即涨停 => 买不进；开盘即跌停 => 卖不出
-        cannot_buy = susp | ~alive | (op >= up_px - 1e-6) | (op <= 0)
-        cannot_sell = susp | ~alive | (op <= dn_px + 1e-6) | (op <= 0)
+
+        # 价格未知时不许成交。
+        # 这里是 NaN 最容易造成"乐观偏差"的地方：昨收缺失 -> 涨停价是 NaN
+        # -> `op >= nan` 求值为 False -> 系统认为"没涨停，可以买"。
+        # 新股上市首日的 prev_close 恰恰就是 NaN，而那天的涨幅最极端。
+        px_unknown = ~np.isfinite(pc) | ~np.isfinite(op)
+        cannot_buy = susp | ~alive | px_unknown | (op >= up_px - 1e-6) | (op <= 0)
+        cannot_sell = susp | ~alive | px_unknown | (op <= dn_px + 1e-6) | (op <= 0)
 
         lot = np.array([200 if classify_board(c) is Board.STAR else 100 for c in codes])
         adv20 = pd.DataFrame(amt, index=dates, columns=codes).rolling(20, min_periods=5).mean().values

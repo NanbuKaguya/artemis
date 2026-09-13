@@ -50,7 +50,7 @@ def test_missing_required_column_raises_with_actual_names():
 # ---------------------------------------------------------------- 排雷判定
 def test_st_detected_from_name(snap):
     """ST 状态藏在名称里，这是 Lite 不需要额外数据源的关键。"""
-    r = check(["600666"], snapshot=snap, with_adv20=False).iloc[0]
+    r = check(["600666"], snapshot=snap, with_history=False).iloc[0]
     assert r["结论"] == "❌ 排除"
     assert "ST" in r["踩雷"]
 
@@ -59,15 +59,53 @@ def test_delisting_marker_in_name_also_caught():
     raw = pd.DataFrame([{"代码": "600123", "名称": "退市博元", "最新价": 0.9,
                          "涨跌幅": -3.0, "成交额": 0.05e8, "总市值": 5e8,
                          "流通市值": 5e8, "换手率": 1.0}])
-    r = check(["600123"], snapshot=normalize_snapshot(raw), with_adv20=False).iloc[0]
+    r = check(["600123"], snapshot=normalize_snapshot(raw), with_history=False).iloc[0]
     assert r["结论"] == "❌ 排除"
 
 
-def test_limit_up_blocks_buy(snap):
-    """涨停买不进 —— 与回测引擎的行为必须一致。"""
-    r = check(["000001"], snapshot=snap, with_adv20=False).iloc[0]
-    assert r["结论"] == "❌ 排除"
-    assert "涨停" in r["踩雷"]
+def test_yesterday_limit_up_blocks_buy():
+    """昨日涨停要拦下 —— 今日大概率高开，追进去就是接盘。
+
+    注意口径：判据是**昨日真实涨幅**，不是快照里的当日涨跌幅。
+    watch 设计在开盘前跑，那时当日涨跌幅尚未产生。
+    """
+    from artemis.lite import RecentStats, check_one
+
+    row = pd.Series({"code": "000001", "name": "平安银行", "price": 11.5,
+                     "pct_chg": 0.0, "amount": 38e8, "total_mv": 2200e8,
+                     "float_mv": 2200e8, "turnover_rate": 0.0})
+    mkt = pd.Timestamp("2026-09-11")
+    st = RecentStats(adv20=38e8, last_date=mkt, last_close=11.0,
+                     prev_close=10.0, last_amount=38e8)      # 昨日 +10%
+    mines = {m.rule: m for m in check_one(row, GuardConfig(), st, mkt)}
+    assert mines["昨日涨停（今日易高开）"].hit
+
+
+def test_suspended_stock_is_blocked():
+    """停牌股必须排除 —— 此前完全没有这条检查，停牌股会进入当日清单。"""
+    from artemis.lite import RecentStats, check_one
+
+    row = pd.Series({"code": "600001", "name": "某停牌股", "price": 15.3,
+                     "pct_chg": 0.0, "amount": 0.0, "total_mv": 120e8,
+                     "float_mv": 100e8, "turnover_rate": 0.0})
+    mkt = pd.Timestamp("2026-09-11")
+    st = RecentStats(adv20=3e8, last_date=pd.Timestamp("2026-08-20"),
+                     last_close=15.3, prev_close=15.3, last_amount=0.0)
+    mines = {m.rule: m for m in check_one(row, GuardConfig(), st, mkt)}
+    assert mines["停牌"].hit and mines["停牌"].severity == "block"
+
+
+def test_intraday_snapshot_fields_not_used_for_limit_up():
+    """回归测试：快照的当日涨跌幅不得再用于涨停判定。
+
+    开盘前它是 0 或残留值。曾经的实现直接拿它判「当日涨停」，
+    等于在检查一个尚未产生的数。
+    """
+    src = Path(__file__).resolve().parents[1] / "artemis" / "lite.py"
+    body = src.read_text(encoding="utf-8")
+    fn = body[body.index("def check_one("):body.index("def check(codes")]
+    assert 'row.get("pct_chg"' not in fn, "check_one 不应再读取快照的当日涨跌幅"
+    assert "stats.last_pct" in fn, "应改用昨日真实涨幅"
 
 
 def test_board_specific_limit_threshold():
@@ -75,38 +113,69 @@ def test_board_specific_limit_threshold():
     raw = pd.DataFrame([{"代码": "300750", "名称": "宁德时代", "最新价": 200.0,
                          "涨跌幅": 12.0, "成交额": 50e8, "总市值": 8000e8,
                          "流通市值": 7000e8, "换手率": 1.5}])
-    r = check(["300750"], snapshot=normalize_snapshot(raw), with_adv20=False).iloc[0]
+    r = check(["300750"], snapshot=normalize_snapshot(raw), with_history=False).iloc[0]
     assert r["结论"] != "❌ 排除", "创业板涨 12% 未到 20% 涨停，不该被判涨停"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cache(tmp_path, monkeypatch):
+    """把缓存根目录指到临时目录。
+
+    此前这些测试读的是仓库里真实的 data_cache/journal_prices.parquet，
+    于是 monkeypatch 的假行情压根没被用上 —— 几条 journal 测试是
+    "碰巧过的"，改坏了也照样绿。顺带覆盖了 ARTEMIS_DATA_DIR 这条路径。
+    """
+    monkeypatch.setenv("ARTEMIS_DATA_DIR", str(tmp_path / "cache"))
+
+
 def test_clean_stock_passes(snap):
-    r = check(["600519"], snapshot=snap, with_adv20=False).iloc[0]
+    r = check(["600519"], snapshot=snap, with_history=False).iloc[0]
     assert r["结论"] == "✓ 通过"
 
 
-def test_warn_does_not_block(snap):
-    """换手过热是提示不是否决 —— 分级很重要，否则清单会空。"""
-    r = check(["301888"], snapshot=snap, with_adv20=False).iloc[0]
-    assert r["结论"] == "⚠ 注意"
+def test_warn_does_not_block(snap, monkeypatch):
+    """换手过热是提示不是否决 —— 分级很重要，否则清单会空。
+
+    换手率现在由「昨日成交额 / 流通市值」算出，不再用快照里的日内值，
+    所以要喂一份 stats 才能触发这条 warn。
+    """
+    import artemis.lite as lite
+
+    fmv = float(snap.set_index("code").loc["301888", "float_mv"])
+    st = lite.RecentStats(
+        adv20=fmv * 0.4, last_date=pd.Timestamp("2026-09-11"),
+        last_close=42.0, prev_close=41.9,          # 昨日几乎没涨，不触发涨停
+        last_amount=fmv * 0.4,                     # 昨日换手 40% > 25% 红线
+    )
+    monkeypatch.setattr(lite, "fetch_recent_stats",
+                        lambda codes, **kw: ({c: st for c in codes}, 0))
+    monkeypatch.setattr(lite, "fetch_snapshot", lambda *a, **k: snap)
+    monkeypatch.setattr(lite, "_market_last_trading_day",
+                        lambda: pd.Timestamp("2026-09-11"))
+
+    r = lite.check(["301888"], with_history=True).iloc[0]
+    assert r["结论"] == "⚠ 注意", f"应为提示而非排除：{r.to_dict()}"
+    assert "换手过热" in r["提示"]
 
 
 def test_missing_codes_reported(snap):
-    df = check(["600519", "999999"], snapshot=snap, with_adv20=False)
+    df = check(["600519", "999999"], snapshot=snap, with_history=False)
     assert df.attrs.get("missing") == ["999999"]
 
 
 # ---------------------------------------------------------------- 诚实性
-def test_unavailable_check_says_so_not_silently_passes():
-    """拿不到 20 日均额时，流动性这条必须说"未检"，不能装作通过。
+def test_no_history_marks_every_flow_rule_unchecked():
+    """拿不到历史时，所有流量类规则必须标"未检"，不能装作通过。
 
     这是 Lite 最重要的性质：数据缺失时诚实标注，而不是静默放行。
     """
     row = pd.Series({"code": "600000", "name": "浦发银行", "price": 10.0,
                      "pct_chg": 0.5, "amount": 5e8, "total_mv": 3000e8,
                      "float_mv": 3000e8, "turnover_rate": 1.0})
-    mines = {m.rule: m for m in check_one(row, GuardConfig(), adv20=None)}
-    assert "未检" in mines["流动性"].detail
-    assert mines["流动性"].hit is False
+    mines = {m.rule: m for m in check_one(row, GuardConfig(), stats=None)}
+    for rule in ("停牌", "昨日涨停", "流动性", "昨日成交清淡", "换手过热"):
+        assert "未检" in mines[rule].detail, f"{rule} 应标注未检"
+        assert mines[rule].hit is False
 
 
 def test_missing_market_cap_says_unchecked():
@@ -127,7 +196,7 @@ def test_low_price_rule():
 
 
 # ---------------------------------------------------------------- 静默失效
-def test_adv20_counts_failures_instead_of_swallowing(monkeypatch):
+def test_recent_stats_counts_failures_instead_of_swallowing(monkeypatch):
     """全部拉取失败时必须计数并告警。
 
     原实现是 except: pass，用户只会看到"流动性: 未检"，
@@ -144,16 +213,16 @@ def test_adv20_counts_failures_instead_of_swallowing(monkeypatch):
     fake.stock_zh_a_hist = boom
     monkeypatch.setitem(sys.modules, "akshare", fake)
 
-    from artemis.lite import fetch_adv20
-    out, failed = fetch_adv20(["600519", "000001"], sleep=0.0, progress=False)
+    from artemis.lite import fetch_recent_stats
+    out, failed = fetch_recent_stats(["600519", "000001"], sleep=0.0, progress=False)
     assert out == {}
     assert failed == 2, "失败必须被计数，不能静默吞掉"
 
 
-def test_check_exposes_adv20_failure_count(snap):
+def test_check_exposes_history_failure_count(snap):
     """失败数要透出到结果上，否则调用方无从判断 ✓ 的含金量。"""
-    df = check(["600519"], snapshot=snap, with_adv20=False)
-    assert "adv20_failed" in df.attrs
+    df = check(["600519"], snapshot=snap, with_history=False)
+    assert "history_failed" in df.attrs
 
 
 # ---------------------------------------------------------------- 收益对账

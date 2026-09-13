@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -23,7 +24,17 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
-DEFAULT_CACHE = Path("./data_cache/trade_calendar.json")
+def _default_cache() -> Path:
+    """和 lite.py / service.py 共用 ARTEMIS_DATA_DIR。
+
+    写死相对路径在 launchd 下会解析到 /，日历缓存于是永远读不回来，
+    每次都退化成"按工作日判断"—— 而这个降级只在 stderr 说一句。
+    """
+    return Path(os.environ.get("ARTEMIS_DATA_DIR", "./data_cache")) / "trade_calendar.json"
+
+
+# 兼容旧引用；真正取路径请用 _default_cache()
+DEFAULT_CACHE = _default_cache()
 
 # A 股交易时段（北京时间）
 OPEN_AM, CLOSE_AM = "09:30", "11:30"
@@ -40,8 +51,10 @@ class CalendarStatus:
 
 
 class TradingCalendar:
-    def __init__(self, cache_path: str | Path = DEFAULT_CACHE):
-        self.cache_path = Path(cache_path)
+    def __init__(self, cache_path: str | Path | None = None):
+        # 默认值在调用时解析，不在 import 时。模块级常量会把
+        # ARTEMIS_DATA_DIR 冻在第一次 import 的取值上。
+        self.cache_path = Path(cache_path) if cache_path is not None else _default_cache()
         self._days: set[date] = set()
         self._status = CalendarStatus(False, "none", None, None, "尚未加载")
         self._load_cache()

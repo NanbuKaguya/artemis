@@ -18,6 +18,9 @@ import numpy as np
 import pandas as pd
 
 
+
+from ..regime.market_state import clip_by_board
+
 def attribute(result, bars: pd.DataFrame, benchmark: pd.Series | None = None) -> pd.DataFrame:
     """对一次回测做收益归因。返回各分项的年化贡献。"""
     daily = result.daily
@@ -26,7 +29,7 @@ def attribute(result, bars: pd.DataFrame, benchmark: pd.Series | None = None) ->
 
     px = bars["close"].unstack("code")
     if benchmark is None:
-        mkt_ret = px.pct_change().clip(-0.11, 0.11).mean(axis=1).reindex(dates).fillna(0)
+        mkt_ret = clip_by_board(px.pct_change()).mean(axis=1).reindex(dates).fillna(0)
     else:
         mkt_ret = benchmark.reindex(dates).ffill().pct_change().fillna(0)
 
@@ -75,7 +78,7 @@ def rolling_alpha_health(result, bars: pd.DataFrame, window: int = 120) -> pd.Da
     """
     ret = result.equity.pct_change().fillna(0)
     px = bars["close"].unstack("code")
-    mkt = px.pct_change().clip(-0.11, 0.11).mean(axis=1).reindex(ret.index).fillna(0)
+    mkt = clip_by_board(px.pct_change()).mean(axis=1).reindex(ret.index).fillna(0)
     pos = result.daily["position_pct"].reindex(ret.index).fillna(0)
     alpha = ret - pos * mkt
     out = pd.DataFrame({

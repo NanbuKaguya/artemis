@@ -28,10 +28,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -42,6 +44,18 @@ from .rules import classify_board, price_limit_pct
 # 快照契约：check() 只认这几列，任何数据源产出这个结构都能用
 SNAPSHOT_COLS = ["code", "name", "price", "pct_chg", "amount", "total_mv",
                  "float_mv", "turnover_rate"]
+
+CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def today_cn() -> date:
+    """北京日期。
+
+    绝不能用 date.today() —— 那是系统本地日期。launchd/cron 不带 TZ
+    环境变量时就是 UTC，凌晨 8 点前跑会差一天，而 journal 的日期直接
+    用来切价格序列，差一天就取错入场价。
+    """
+    return datetime.now(CN_TZ).date()
 
 
 # --------------------------------------------------------------------------
@@ -89,18 +103,38 @@ def normalize_snapshot(df: pd.DataFrame) -> pd.DataFrame:
     return out[SNAPSHOT_COLS]
 
 
-def fetch_adv20(codes: list[str], sleep: float = 0.2,
-                progress: bool = True) -> tuple[dict[str, float], int]:
-    """取 20 日均成交额。快照里没有，只能逐只拉历史。
+@dataclass
+class RecentStats:
+    """一只股票最近一个交易日的真实状态。
 
-    返回 (结果字典, 失败数)。
+    为什么必须从历史取而不是从快照取：
+    artemis watch 的设计是**开盘前**跑，而东财快照的「涨跌幅/成交额/换手率」
+    都是当日实时值 —— 开盘前它们要么是 0 要么是残留值。拿它判断
+    「今日涨停」「今日停牌」，检查的是一个尚未产生的数。
 
-    两个必须处理的事：
-    1. **进度输出**。逐只拉取 + 限速，20 只要 30-60 秒。没有输出的话
-       用户会以为程序卡死然后 Ctrl-C —— 然后再也不用这个工具了。
-    2. **失败要计数**。原来是 except: pass，全部失败时用户只看到
-       "流动性: 未检"，分不清是"没查"还是"查了但失败"。
-       这正是本项目一直在防的静默失效，而它就出在我自己的代码里。
+    而 adv20 本来就要拉 60 天历史，顺手把昨日的真实值一起取出来，
+    不增加任何网络请求。
+    """
+
+    adv20: float = float("nan")       # 20 日均成交额（元）
+    last_date: "pd.Timestamp | None" = None
+    last_close: float = float("nan")
+    prev_close: float = float("nan")
+    last_amount: float = float("nan")
+
+    @property
+    def last_pct(self) -> float:
+        if not (self.prev_close and self.prev_close > 0):
+            return float("nan")
+        return (self.last_close / self.prev_close - 1) * 100
+
+
+def fetch_recent_stats(codes: list[str], sleep: float = 0.2,
+                       progress: bool = True) -> tuple[dict[str, RecentStats], int]:
+    """取每只股票最近交易日的真实状态 + 20 日均额。
+
+    返回 (结果字典, 失败数)。失败必须计数：全部失败时用户只看到
+    "未检"，分不清是"没查"还是"查了但全失败"。
     """
     try:
         import akshare as ak
@@ -109,25 +143,37 @@ def fetch_adv20(codes: list[str], sleep: float = 0.2,
     import sys
     import time
 
-    end = date.today().strftime("%Y%m%d")
-    start = (pd.Timestamp.today() - pd.Timedelta(days=60)).strftime("%Y%m%d")
-    out: dict[str, float] = {}
+    end = today_cn().strftime("%Y%m%d")
+    start = (pd.Timestamp(today_cn()) - pd.Timedelta(days=60)).strftime("%Y%m%d")
+    out: dict[str, RecentStats] = {}
     failed = 0
     total = len(codes)
 
     if progress and total:
-        print(f"  取 20 日均成交额（{total} 只，约 {total * (sleep + 0.5):.0f} 秒）...",
-              file=sys.stderr, flush=True)
+        print(f"  取最近交易日状态 + 20 日均额（{total} 只，"
+              f"约 {total * (sleep + 0.5):.0f} 秒）...", file=sys.stderr, flush=True)
 
     for i, c in enumerate(codes, 1):
         try:
             d = ak.stock_zh_a_hist(symbol=c, period="daily",
                                    start_date=start, end_date=end, adjust="")
-            col = next((x for x in d.columns if "成交额" in str(x)), None)
-            if col is not None and len(d):
-                out[c] = float(pd.to_numeric(d[col], errors="coerce").tail(20).mean())
-            else:
+            dcol = next((x for x in d.columns if "日期" in str(x)), None)
+            ccol = next((x for x in d.columns if "收盘" in str(x)), None)
+            acol = next((x for x in d.columns if "成交额" in str(x)), None)
+            if not (dcol and ccol and len(d)):
                 failed += 1
+            else:
+                dd = d.sort_values(dcol)
+                closes = pd.to_numeric(dd[ccol], errors="coerce")
+                amts = (pd.to_numeric(dd[acol], errors="coerce") if acol
+                        else pd.Series(dtype=float))
+                out[c] = RecentStats(
+                    adv20=float(amts.tail(20).mean()) if len(amts) else float("nan"),
+                    last_date=pd.Timestamp(pd.to_datetime(dd[dcol]).iloc[-1]),
+                    last_close=float(closes.iloc[-1]),
+                    prev_close=float(closes.iloc[-2]) if len(closes) >= 2 else float("nan"),
+                    last_amount=float(amts.iloc[-1]) if len(amts) else float("nan"),
+                )
         except Exception:  # noqa: BLE001 - 单只失败不该中断整批，但要计数
             failed += 1
         if progress and total:
@@ -135,15 +181,13 @@ def fetch_adv20(codes: list[str], sleep: float = 0.2,
         time.sleep(sleep)
 
     if progress and total:
-        # 直接换行而不是 \r 清行：清行技巧在管道/日志里会渲染成乱码，
-        # 而这个输出很可能被重定向到文件（定时任务）
         print("", file=sys.stderr, flush=True)
         if failed:
-            print(f"  ⚠ {failed}/{total} 只没取到成交额，这些票的流动性检查会跳过",
+            print(f"  ⚠ {failed}/{total} 只没取到历史，这些票的涨停/停牌/流动性检查会跳过",
                   file=sys.stderr, flush=True)
             if failed == total:
                 print("  ⚠ 全部失败 —— 多半是被限频了。等几分钟再试，"
-                      "或先用 --no-adv20 跳过流动性检查", file=sys.stderr, flush=True)
+                      "或先用 --no-history 只做名称与市值检查", file=sys.stderr, flush=True)
     return out, failed
 
 
@@ -158,24 +202,48 @@ class Landmine:
     severity: str      # 'block' 一票否决 / 'warn' 提示
 
 
-def check_one(row: pd.Series, cfg: GuardConfig, adv20: float | None = None) -> list[Landmine]:
-    """单只股票的排雷检查。"""
+def _market_last_trading_day() -> "pd.Timestamp | None":
+    """市场最近一个已收盘的交易日。用于判定个股是否停牌。"""
+    from .calendar import TradingCalendar
+
+    cal = TradingCalendar()
+    today = today_cn()
+    trading, _ = cal.is_trading_day(today)
+    # 当日尚未收盘时，最近已收盘的交易日是上一个
+    if trading and cal.session() not in ("postmarket",):
+        prev = cal.prev_trading_day(today)
+        return pd.Timestamp(prev) if prev else None
+    if trading:
+        return pd.Timestamp(today)
+    prev = cal.prev_trading_day(today)
+    return pd.Timestamp(prev) if prev else None
+
+
+def check_one(row: pd.Series, cfg: GuardConfig,
+              stats: "RecentStats | None" = None,
+              market_last: "pd.Timestamp | None" = None) -> list[Landmine]:
+    """单只股票的排雷检查。
+
+    **口径说明（这是本函数最容易被误解的地方）**：
+    快照里的「涨跌幅/成交额/换手率」是当日实时值，而 watch 设计在开盘前跑，
+    那时它们尚未产生。所以涨停、停牌、流动性、换手一律用 stats（昨日真实值），
+    只有名称(ST)、市值、股价这些"存量"字段才用快照。
+    """
     code, name = row["code"], str(row.get("name", ""))
     out: list[Landmine] = []
 
+    # ---- 存量字段：快照即可 ----
     is_st = ("ST" in name.upper()) or ("退" in name)
     out.append(Landmine(
         "ST/退市风险", is_st,
-        f"名称含 ST/退：{name}" if is_st else f"{name}",
-        "block"))
+        f"名称含 ST/退：{name}" if is_st else f"{name}", "block"))
 
     mv = row.get("total_mv", np.nan)
     small = bool(pd.notna(mv) and mv < cfg.min_market_cap)
     out.append(Landmine(
         "市值下限", small,
         f"总市值 {mv/1e8:.1f} 亿（红线 {cfg.min_market_cap/1e8:.0f} 亿）"
-        if pd.notna(mv) else "总市值缺失，本条未检",
-        "block"))
+        if pd.notna(mv) else "总市值缺失，本条未检", "block"))
 
     px = row.get("price", np.nan)
     low_px = bool(pd.notna(px) and px < 2.0)
@@ -183,41 +251,67 @@ def check_one(row: pd.Series, cfg: GuardConfig, adv20: float | None = None) -> l
         "低价股（面值退市）", low_px,
         f"股价 {px:.2f} 元" if pd.notna(px) else "股价缺失", "block"))
 
-    pct = row.get("pct_chg", np.nan)
+    # ---- 流量字段：必须用昨日真实值 ----
+    if stats is None:
+        for rule in ("停牌", "昨日涨停", "流动性", "昨日成交清淡", "换手过热"):
+            out.append(Landmine(rule, False, "未取历史数据，本条未检", "warn"))
+        return out
+
+    # 停牌：个股最后有数据的交易日早于市场最后交易日
+    if stats.last_date is not None and market_last is not None:
+        gap = (market_last - stats.last_date).days
+        susp = gap > 0
+        out.append(Landmine(
+            "停牌", susp,
+            f"最后交易日 {stats.last_date.date()}，市场为 {market_last.date()}"
+            if susp else f"最后交易日 {stats.last_date.date()}", "block"))
+    elif pd.notna(stats.last_amount) and stats.last_amount <= 0:
+        out.append(Landmine("停牌", True, "最近交易日零成交", "block"))
+    else:
+        out.append(Landmine("停牌", False, "无交易日历，无法判定", "warn"))
+
+    # 昨日涨停：今日大概率高开，追进去就是接盘
     lim = price_limit_pct(code, is_st) * 100
-    at_limit = bool(pd.notna(pct) and pct >= lim - 0.5)
+    pct = stats.last_pct
+    hit = bool(pd.notna(pct) and pct >= lim - 0.5)
     out.append(Landmine(
-        "当日涨停（买不进）", at_limit,
-        f"涨幅 {pct:+.2f}%（涨停 {lim:.0f}%）" if pd.notna(pct) else "涨幅缺失",
+        "昨日涨停（今日易高开）", hit,
+        f"昨日涨幅 {pct:+.2f}%（涨停 {lim:.0f}%）" if pd.notna(pct) else "涨跌幅缺失",
         "block"))
 
-    if adv20 is not None and np.isfinite(adv20):
-        illiq = adv20 < cfg.min_adv20
+    if np.isfinite(stats.adv20):
         out.append(Landmine(
-            "流动性", illiq,
-            f"20日均额 {adv20/1e8:.3f} 亿（下限 {cfg.min_adv20/1e8:.2f} 亿）",
+            "流动性", stats.adv20 < cfg.min_adv20,
+            f"20日均额 {stats.adv20/1e8:.3f} 亿（下限 {cfg.min_adv20/1e8:.2f} 亿）",
             "block"))
     else:
-        out.append(Landmine("流动性", False, "未取 20 日均额，本条未检", "warn"))
+        out.append(Landmine("流动性", False, "未取到 20 日均额，本条未检", "warn"))
 
-    amt = row.get("amount", np.nan)
-    thin_today = bool(pd.notna(amt) and amt < cfg.min_adv20 * 0.5)
+    amt = stats.last_amount
+    thin = bool(pd.notna(amt) and 0 < amt < cfg.min_adv20 * 0.5)
     out.append(Landmine(
-        "当日成交清淡", thin_today,
-        f"今日成交额 {amt/1e8:.3f} 亿" if pd.notna(amt) else "成交额缺失", "warn"))
+        "昨日成交清淡", thin,
+        f"昨日成交额 {amt/1e8:.3f} 亿" if pd.notna(amt) else "成交额缺失", "warn"))
 
-    tr = row.get("turnover_rate", np.nan)
-    hot = bool(pd.notna(tr) and tr > 25.0)
-    out.append(Landmine(
-        "换手过热", hot,
-        f"换手率 {tr:.1f}%" if pd.notna(tr) else "换手率缺失", "warn"))
+    # 换手率由昨日成交额 / 流通市值算出，不用快照的日内值
+    fmv = row.get("float_mv", np.nan)
+    if pd.notna(amt) and pd.notna(fmv) and fmv > 0:
+        tr = amt / fmv * 100
+        out.append(Landmine("换手过热", tr > 25.0, f"昨日换手率 {tr:.1f}%", "warn"))
+    else:
+        out.append(Landmine("换手过热", False, "流通市值缺失，本条未检", "warn"))
 
     return out
 
 
 def check(codes: list[str], snapshot: pd.DataFrame | None = None,
-          with_adv20: bool = True, cfg: GuardConfig | None = None) -> pd.DataFrame:
-    """批量排雷检查。返回一张给人看的表。"""
+          with_history: bool = True, cfg: GuardConfig | None = None) -> pd.DataFrame:
+    """批量排雷检查。返回一张给人看的表。
+
+    with_history=False 时只做名称/市值/股价这几项存量检查，
+    涨停、停牌、流动性、换手一律标注"未检" —— 明说没查，
+    而不是让它们默默通过。
+    """
     cfg = cfg or GuardConfig()
     snap = snapshot if snapshot is not None else fetch_snapshot()
     codes = [str(c).zfill(6) for c in codes]
@@ -225,14 +319,19 @@ def check(codes: list[str], snapshot: pd.DataFrame | None = None,
     sub = snap[snap["code"].isin(codes)]
     missing = sorted(set(codes) - set(sub["code"]))
 
-    adv: dict[str, float] = {}
-    adv_failed = 0
-    if with_adv20 and snapshot is None:
-        adv, adv_failed = fetch_adv20(list(sub["code"]))
+    stats: dict[str, RecentStats] = {}
+    hist_failed = 0
+    if with_history:
+        # 不能因为"调用方传了快照"就跳过历史。快照只有名称/市值/股价，
+        # 停牌和昨日涨停要靠日线才看得出来。此前这两件事被耦合在一起，
+        # 传快照的调用方会拿到一份四条流量规则全是"未检"的结果 ——
+        # 而它并没有要求跳过。
+        stats, hist_failed = fetch_recent_stats(list(sub["code"]))
+    market_last = _market_last_trading_day() if stats else None
 
     rows = []
     for _, r in sub.iterrows():
-        mines = check_one(r, cfg, adv.get(r["code"]))
+        mines = check_one(r, cfg, stats.get(r["code"]), market_last)
         blocked = [m for m in mines if m.hit and m.severity == "block"]
         warned = [m for m in mines if m.hit and m.severity == "warn"]
         rows.append({
@@ -245,7 +344,7 @@ def check(codes: list[str], snapshot: pd.DataFrame | None = None,
     df = pd.DataFrame(rows)
     if missing:
         df.attrs["missing"] = missing
-    df.attrs["adv20_failed"] = adv_failed
+    df.attrs["history_failed"] = hist_failed
     return df
 
 
@@ -276,7 +375,7 @@ def fetch_sample_history(
         raise RuntimeError("请先 pip install akshare") from e
     import time
 
-    end = pd.Timestamp.today()
+    end = pd.Timestamp(today_cn())
     start = end - pd.Timedelta(days=int(years * 365))
     s_str, e_str = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
 
@@ -294,18 +393,41 @@ def fetch_sample_history(
             if d is None or len(d) == 0:
                 continue
             d = _norm_hist(d)
+            hfq_close = pd.Series(dtype=float)
             if h is not None and len(h):
-                d["adj_factor"] = (_norm_hist(h)["close"] / d["close"]).ffill().fillna(1.0)
+                hfq_close = _norm_hist(h)["close"]
+                d["adj_factor"] = (hfq_close / d["close"]).ffill().fillna(1.0)
             else:
                 d["adj_factor"] = 1.0
 
             d["code"] = c
             d["prev_close"] = d["close"].shift(1).fillna(d["open"])
-            if c in snap.index and pd.notna(snap.loc[c, "price"]) and snap.loc[c, "price"] > 0:
-                shares = snap.loc[c, "total_mv"] / snap.loc[c, "price"]
-                d["total_mv"] = d["close"] * shares
-                d["float_mv"] = d["total_mv"] * float(
-                    snap.loc[c, "float_mv"] / max(snap.loc[c, "total_mv"], 1e-9))
+
+            # ---- 历史市值：必须用后复权价推，不能用当前股本 × 历史未复权价 ----
+            # 错误做法（曾经的实现）：shares = 当前市值/当前价，
+            #   总市值_t = 未复权价_t × shares
+            # 它假设股本从未变过。A 股送转极其普遍：10送10 会让历史市值
+            # 被高估 +100%，一只真实 20 亿的票算成 40 亿，直接绕过 30 亿红线。
+            #
+            # 正确推导：设 t 时刻股本 S_t、未复权价 P_t、后复权价 H_t = P_t·f_t。
+            # 送转比例 r 时 S 乘以 r，而后复权因子 f 也乘以 r（后复权要保持
+            # 收益连续：H 在除权前后不跳变）。于是 S_t = S_now · f_t / f_now，
+            #   总市值_t = P_t · S_t = P_t · f_t · S_now/f_now = H_t · S_now/f_now
+            #            = H_t / H_now · 总市值_now
+            # 只需两端的后复权价和当前市值，不需要知道股本本身。
+            # 残留误差来自现金分红（后复权含分红再投资，会让 f 略微多涨），
+            # 三年期 A 股股息率下通常是个位数百分比，远优于 +100%。
+            mv_now = snap.loc[c, "total_mv"] if c in snap.index else np.nan
+            hfq_now = float(hfq_close.iloc[-1]) if len(hfq_close) else np.nan
+            if (pd.notna(mv_now) and pd.notna(hfq_now) and hfq_now > 0
+                    and len(hfq_close)):
+                ratio = float(mv_now) / hfq_now
+                d["total_mv"] = hfq_close.reindex(d.index).ffill() * ratio
+                fmv_now = snap.loc[c, "float_mv"] if c in snap.index else np.nan
+                if pd.notna(fmv_now) and pd.notna(mv_now) and mv_now > 0:
+                    d["float_mv"] = d["total_mv"] * float(fmv_now) / float(mv_now)
+                else:
+                    d["float_mv"] = np.nan
             else:
                 d["total_mv"] = np.nan
                 d["float_mv"] = np.nan
@@ -364,20 +486,20 @@ def _watchlist_path() -> Path:
 
 
 def cmd_check(codes: list[str]) -> None:
-    no_adv = "--no-adv20" in codes
+    no_hist = "--no-history" in codes or "--no-adv20" in codes
     codes = [c for c in codes if not c.startswith("--")]
     if not codes:
-        print("用法: python -m artemis.lite check 600519 000001 ... [--no-adv20]")
+        print("用法: python -m artemis.lite check 600519 000001 ... [--no-history]")
         return
-    df = check(codes, with_adv20=not no_adv)
+    df = check(codes, with_history=not no_hist)
     print(df.to_string(index=False))
     if df.attrs.get("missing"):
         print(f"\n未在快照中找到（可能已退市或代码有误）：{df.attrs['missing']}")
     n_block = int((df["结论"] == "❌ 排除").sum())
     print(f"\n{len(df)} 只中 {n_block} 只应排除。清单之外的票一律不碰。")
-    if df.attrs.get("adv20_failed"):
-        print(f"注意：{df.attrs['adv20_failed']} 只的流动性未能检查，"
-              f"它们的 ✓ 通过含金量要打折。")
+    if df.attrs.get("history_failed"):
+        print(f"注意：{df.attrs['history_failed']} 只没取到历史，"
+              f"它们的涨停/停牌/流动性未检查，✓ 通过含金量要打折。")
 
 
 def cmd_watch(extra: list[str] | None = None) -> None:
@@ -409,7 +531,7 @@ def cmd_log() -> None:
         print("\n已取消。")
         return
 
-    intent = TradeIntent(date=str(date.today()), code=code, side=side, size_pct=size,
+    intent = TradeIntent(date=str(today_cn()), code=code, side=side, size_pct=size,
                          source=source, thesis=thesis, invalidation=inval,
                          expected_holding_days=days, emotion=emo)
     errs = Journal().record(intent, strict=True)
@@ -422,11 +544,27 @@ def cmd_log() -> None:
         print(f"\n已记录到 journal.jsonl（{code} {side} {size:.1%}）")
 
 
+def data_dir() -> Path:
+    """缓存根目录。
+
+    必须和 service.py 用同一个环境变量。此前 lite.py 写死相对路径
+    "data_cache/"，而 launchd 跑定时任务时工作目录是 / ——
+    于是 watch 写的缓存和 review 读的缓存根本不是同一个文件，
+    复盘每次都当成冷启动重拉，而且悄悄地在 / 下面建目录。
+    """
+    return Path(os.environ.get("ARTEMIS_DATA_DIR", "./data_cache"))
+
+
+def price_cache_path() -> Path:
+    return data_dir() / "journal_prices.parquet"
+
+
+# 兼容旧引用；真正取路径请用 price_cache_path()，它每次都重读环境变量
 PRICE_CACHE = "data_cache/journal_prices.parquet"
 
 
-def _load_price_cache(path: str = PRICE_CACHE) -> "pd.DataFrame":
-    p = Path(path)
+def _load_price_cache(path: "str | Path | None" = None) -> "pd.DataFrame":
+    p = Path(path) if path is not None else price_cache_path()
     if not p.exists():
         return pd.DataFrame(columns=["code", "date", "close"])
     try:
@@ -435,8 +573,8 @@ def _load_price_cache(path: str = PRICE_CACHE) -> "pd.DataFrame":
         return pd.DataFrame(columns=["code", "date", "close"])
 
 
-def _save_price_cache(df: "pd.DataFrame", path: str = PRICE_CACHE) -> None:
-    p = Path(path)
+def _save_price_cache(df: "pd.DataFrame", path: "str | Path | None" = None) -> None:
+    p = Path(path) if path is not None else price_cache_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     df.sort_values(["code", "date"]).drop_duplicates(
         ["code", "date"], keep="last").to_parquet(p, index=False)
@@ -444,7 +582,7 @@ def _save_price_cache(df: "pd.DataFrame", path: str = PRICE_CACHE) -> None:
 
 def fetch_returns_for_journal(
     codes: list[str], start: str, horizon: int = 20, sleep: float = 0.25,
-    cache_path: str = PRICE_CACHE, progress: bool = True,
+    cache_path: "str | Path | None" = None, progress: bool = True,
     need_through: "pd.Timestamp | None" = None,
 ) -> dict[str, "pd.Series"]:
     """为日志里的股票拉取价格序列，带增量缓存。
@@ -476,7 +614,7 @@ def fetch_returns_for_journal(
                   if not cache.empty else {})
 
     need_start = pd.Timestamp(start) - pd.Timedelta(days=10)
-    today = pd.Timestamp.today().normalize()
+    today = pd.Timestamp(today_cn())
 
     # 只需要覆盖到"最新那笔记录走满 horizon 的日子"，不是覆盖到今天。
     # 按"距今几天"判断过期是错的口径：一笔三个月前的记录早就走满窗口了，
@@ -527,23 +665,29 @@ def fetch_returns_for_journal(
                 # 重叠区一致性校验：对不上说明整条序列被重算了
                 old = cache[cache["code"] == c].set_index("date")["close"]
                 ov = fresh.set_index("date")["close"].reindex(old.index).dropna()
-                if len(ov) >= 3:
+                # 重叠不足时不能"跳过校验继续拼接" —— 那正是静默错位的
+                # 入口：两段不同复权基准的序列接在一起，接缝处凭空多出
+                # 一根大阳线，而复盘会把它当成真实收益。宁可整只重拉。
+                if len(ov) < 3:
+                    mismatch = True
+                else:
                     ref = old.reindex(ov.index)
-                    if not np.allclose(ov.values, ref.values, rtol=1e-3):
-                        if progress:
-                            print(f"\r    {c} 复权序列已变，整只重拉",
-                                  file=sys.stderr, flush=True)
-                        cache = cache[cache["code"] != c]
-                        d2 = ak.stock_zh_a_hist(
-                            symbol=c, period="daily",
-                            start_date=need_start.strftime("%Y%m%d"),
-                            end_date=(today + pd.Timedelta(days=1)).strftime("%Y%m%d"),
-                            adjust="hfq")
-                        fresh = pd.DataFrame({
-                            "code": c,
-                            "date": pd.to_datetime(d2[dcol]),
-                            "close": pd.to_numeric(d2[ccol], errors="coerce"),
-                        }).dropna()
+                    mismatch = not np.allclose(ov.values, ref.values, rtol=1e-3)
+                if mismatch:
+                    if progress:
+                        print(f"\r    {c} 复权序列已变，整只重拉",
+                              file=sys.stderr, flush=True)
+                    cache = cache[cache["code"] != c]
+                    d2 = ak.stock_zh_a_hist(
+                        symbol=c, period="daily",
+                        start_date=need_start.strftime("%Y%m%d"),
+                        end_date=(today + pd.Timedelta(days=1)).strftime("%Y%m%d"),
+                        adjust="hfq")
+                    fresh = pd.DataFrame({
+                        "code": c,
+                        "date": pd.to_datetime(d2[dcol]),
+                        "close": pd.to_numeric(d2[ccol], errors="coerce"),
+                    }).dropna()
             new_rows.append(fresh)
         except Exception:  # noqa: BLE001 - 单只失败不中断整批
             pass
@@ -566,7 +710,8 @@ def fetch_returns_for_journal(
     return out
 
 
-def journal_outcomes(j: "pd.DataFrame", horizon: int = 20) -> "pd.DataFrame":
+def journal_outcomes(j: "pd.DataFrame", horizon: int = 20,
+                     cache_path: "str | Path | None" = None) -> "pd.DataFrame":
     """把每笔事前承诺对上它之后的实际收益。
 
     收益口径：记录日的下一个交易日收盘 → 再往后 horizon 个交易日收盘。
@@ -579,7 +724,8 @@ def journal_outcomes(j: "pd.DataFrame", horizon: int = 20) -> "pd.DataFrame":
     need_through = (pd.Timestamp(j["date"].max())
                     + pd.Timedelta(days=int(horizon * 1.5) + 3))
     prices = fetch_returns_for_journal(
-        codes, str(j["date"].min().date()), horizon, need_through=need_through)
+        codes, str(j["date"].min().date()), horizon,
+        cache_path=cache_path, need_through=need_through)
 
     rows = []
     for _, r in j.iterrows():

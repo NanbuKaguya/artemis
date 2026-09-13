@@ -22,6 +22,20 @@ import pandas as pd
 from ..config import RegimeConfig
 
 
+def clip_by_board(ret: "pd.DataFrame") -> "pd.DataFrame":
+    """按各自板块的涨跌停幅度截断个股日收益。
+
+    统一用 ±11% 是错的：创业板/科创板合法波动 20%，北交所 30%。
+    拿主板的尺子去量它们，会把真实行情当成异常值切掉 ——
+    市场指数的波动被系统性低估，而基于它算出来的 beta 偏小、
+    超额收益偏大。归因报告于是把 beta 说成 alpha。
+    """
+    from ..rules import price_limit_pct
+
+    lim = pd.Series({c: price_limit_pct(str(c)) * 1.1 for c in ret.columns})
+    return ret.clip(lower=-lim, upper=lim, axis=1)
+
+
 @dataclass
 class RegimeOutput:
     target_position: pd.Series   # index=date, 值域 [min_position, max_position]
@@ -45,8 +59,8 @@ class RegimeModel:
         if benchmark is None:
             # 等权市场指数：先算个股日收益再等权平均，避免成分变动造成的跳变
             ret = px.pct_change()
-            # 剔除极端值（涨跌停/异常），防止个别股票污染指数
-            ret = ret.clip(-0.11, 0.11)
+            # 剔除极端值（脏数据），但要按各自板块的合法幅度来剔
+            ret = clip_by_board(ret)
             bench_ret = ret.mean(axis=1)
             benchmark = (1 + bench_ret.fillna(0)).cumprod()
         bench_ret = benchmark.pct_change()

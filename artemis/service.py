@@ -173,9 +173,18 @@ def cmd_screen(args: dict) -> Envelope:
     cal = TradingCalendar()
     trading, basis = cal.is_trading_day()
 
-    df = check(codes, with_adv20=bool(args.get("adv20", False)))
+    # 默认取历史。此前默认是 False —— agent 每次 screen 都跳过
+    # 停牌/昨日涨停/流动性/换手，却照样回一个 "✓ 通过"。
+    # 这几条恰恰是排雷的全部价值，不查就没有意义。
+    with_history = bool(args.get("with_history", args.get("adv20", True)))
+    df = check(codes, with_history=with_history)
     records = df.to_dict("records")
     blocked = [r["代码"] for r in records if r["结论"].startswith("❌")]
+
+    # 让 "✓ 通过" 的含金量可被调用方判断，而不是全都长一个样
+    unchecked = ["停牌", "昨日涨停", "流动性", "昨日成交清淡", "换手过热"] \
+        if not with_history else []
+    hist_failed = int(df.attrs.get("history_failed", 0))
 
     return Envelope(
         ok=True, command="screen",
@@ -186,6 +195,12 @@ def cmd_screen(args: dict) -> Envelope:
             "warned": [r["代码"] for r in records if r["结论"].startswith("⚠")],
             "detail": records,
             "not_found": df.attrs.get("missing", []),
+            "unchecked_rules": unchecked,
+            "history_failed": hist_failed,
+            "caveat": ("未取历史，以上结论只覆盖名称/市值/股价三项"
+                       if unchecked else
+                       (f"{hist_failed} 只未取到历史，其流量类规则标为未检"
+                        if hist_failed else None)),
         },
         freshness={"snapshot_taken_at": datetime.now(CN_TZ).isoformat(timespec="seconds"),
                    "is_trading_day": trading, "basis": basis,
