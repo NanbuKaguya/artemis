@@ -509,3 +509,98 @@ def test_digest_says_so_when_nothing_is_verified(kb):
     text = (kb / "digest" / "latest.md").read_text("utf-8")
     assert "一条都没有" in text
     assert "不要把它们当作事实使用" in text
+
+
+# ---------------------------------------------------------------------------
+# digest 自动刷新：循环的终点不能靠人记得
+# ---------------------------------------------------------------------------
+
+def digest_text(root) -> str:
+    return (root / "digest" / "latest.md").read_text("utf-8")
+
+
+def test_lead_refreshes_the_digest_without_kb_digest(kb):
+    run("lead", "新记的线索", "--layer", "structural", "--tier", "2",
+        "--src", "s", "--if-wrong", "w")
+    assert "新记的线索" in digest_text(kb)
+
+
+def test_verify_refreshes_the_digest(kb):
+    cid = seed_one(kb)
+    write_script(kb, f"{cid}.py", HOLDS)
+    run("verify", cid, "--script", f"verify/{cid}.py")
+    text = digest_text(kb)
+    assert "verified **1**" in text
+    assert "一条都没有" not in text     # 旧的"还没挣到任何东西"必须消失
+
+
+def test_falsify_refreshes_the_digest(kb):
+    cid = seed_one(kb)
+    run("falsify", cid, "--why", "后来被打脸")
+    assert "falsified 1" in digest_text(kb)
+
+
+def test_stale_refreshes_the_digest(kb):
+    cid = make_verified(kb)
+    age(conn_of(kb), cid, 200)
+    run("stale")
+    assert "stale 1" in digest_text(kb)
+
+
+def test_readonly_commands_do_not_touch_the_digest(kb):
+    cid = seed_one(kb)
+    run("digest")
+    before = (kb / "digest" / "latest.md").stat().st_mtime_ns
+    run("list")
+    run("show", cid)
+    run("stale")          # 没有到期的，不写库
+    assert (kb / "digest" / "latest.md").stat().st_mtime_ns == before
+
+
+# ---------------------------------------------------------------------------
+# kb doctor：门还拦不拦得住
+# ---------------------------------------------------------------------------
+
+def test_doctor_passes_on_a_healthy_kb(kb):
+    seed_one(kb)
+    assert run("doctor", "--offline") == 0
+
+
+def test_doctor_fails_when_the_update_gate_is_dropped(kb):
+    """光检查触发器在不在是在度量"组件在不在"。这里要的是它真的拦。"""
+    conn = conn_of(kb)
+    conn.execute("DROP TRIGGER no_weak_verified_update")
+    conn.commit()
+    assert run("doctor", "--offline") == 1
+
+
+def test_doctor_fails_when_the_insert_gate_is_dropped(kb):
+    conn = conn_of(kb)
+    conn.execute("DROP TRIGGER no_weak_verified_insert")
+    conn.commit()
+    assert run("doctor", "--offline") == 1
+
+
+def test_doctor_probes_leave_nothing_behind(kb):
+    """探针是真写进去的，必须全部回滚 —— 一条都不许留在库里或账本里。"""
+    seed_one(kb)
+    before = conn_of(kb).execute("SELECT count(*) FROM claim").fetchone()[0]
+    ledger_before = ledger.events_path(kb).read_text("utf-8")
+    run("doctor", "--offline")
+    assert conn_of(kb).execute("SELECT count(*) FROM claim").fetchone()[0] == before
+    assert conn_of(kb).execute(
+        "SELECT count(*) FROM claim WHERE id LIKE '%doctor%'").fetchone()[0] == 0
+    assert ledger.events_path(kb).read_text("utf-8") == ledger_before
+
+
+def test_doctor_warns_when_the_digest_lags(kb, capsys):
+    seed_one(kb)
+    run("digest")
+    (kb / "digest" / "latest.md").write_text("# 过期的 digest\n", encoding="utf-8")
+    assert run("doctor", "--offline") == 0      # 落后是警告，不是失败
+    assert "落后于库" in capsys.readouterr().out
+
+
+def test_doctor_on_a_missing_kb_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASHARE_KB_ROOT", str(tmp_path))
+    assert run("doctor", "--offline") == 1

@@ -6,12 +6,15 @@ import argparse
 import sys
 
 from . import commands as c
-from .db import KBError
+from . import digest as digest_mod
+from . import ledger
+from .db import KBError, connect, kb_root
 
 EPILOG = """核心循环:
   kb lead "<断言>" --layer institutional --tier 4 --src <来源> --if-wrong "<什么观测推翻它>"
   kb source <id> --tier 1 --src sources/xxx.pdf      # 回溯：L4/L5 -> L1-L3
   kb verify <id> --script verify/<id>.py            # 只有脚本能把它变成 verified
+  kb doctor                                         # 预检：门还在不在、数据源通不通
   kb stale                                          # 淘汰：过期的 verified 降级
   kb digest                                         # 生成 digest/latest.md
 """
@@ -64,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true", help="只列出，不写库")
     s.set_defaults(func=c.cmd_stale)
 
+    s = sub.add_parser("doctor", help="预检：质量门还拦不拦得住、数据源今天还能不能用")
+    s.add_argument("--offline", action="store_true", help="跳过取数检查")
+    s.set_defaults(func=c.cmd_doctor)
+
     s = sub.add_parser("digest", help="生成 digest/latest.md")
     s.set_defaults(func=c.cmd_digest)
 
@@ -84,10 +91,28 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _refresh_digest(args) -> None:
+    """状态一变就重写 digest。
+
+    digest/latest.md 是下一次会话唯一会读的文件。让它靠人记得跑 `kb digest`
+    来保持同步，就等于给整个循环的终点留了一个症状为零的失效模式：
+    digest 停在旧状态，下一个 Claude 被过期的库 prime，而且无从知道。
+    """
+    try:
+        root = kb_root(args.root)
+        digest_mod.write(root, connect(root))
+    except Exception as exc:  # 刷新失败不能吃掉命令本身的结果
+        print(f"警告: digest 刷新失败（{type(exc).__name__}: {exc}）；"
+              "手动跑一次 kb digest", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        return args.func(args)
+        rc = args.func(args)
+        if ledger.consume_dirty():
+            _refresh_digest(args)
+        return rc
     except KBError as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1

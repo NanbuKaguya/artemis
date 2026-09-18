@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from . import digest as digest_mod
+from . import doctor as doctor_mod
 from . import ledger, tombstone
 from .db import (
     STALE_DEFAULT,
@@ -452,6 +453,10 @@ def cmd_digest(args) -> int:
         print(f"写入 {p.relative_to(root)}")
     _print_scoreboard(conn)
     return 0
+
+
+def cmd_doctor(args) -> int:
+    return doctor_mod.run(kb_root(args.root), args.offline)
 
 
 def _print_scoreboard(conn: sqlite3.Connection) -> None:

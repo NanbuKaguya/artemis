@@ -13,6 +13,11 @@ from pathlib import Path
 
 EVENTS = "ledger/events.jsonl"
 
+# "写了账本" 等价于 "状态变了" 等价于 "digest 过期了"。
+# 把标记挂在 append 上而不是挂在各个命令上：以后新增的命令只要记账本，
+# 就自动带上 digest 刷新 —— 不依赖谁记得去某个列表里补一行。
+_dirty = False
+
 
 def events_path(root: Path) -> Path:
     return root / EVENTS
@@ -29,7 +34,16 @@ def append(root: Path, action: str, claim_id: str, row: dict | None, **extra) ->
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(event, ensure_ascii=False, sort_keys=False) + "\n")
+    global _dirty
+    _dirty = True
     return event
+
+
+def consume_dirty() -> bool:
+    """自上次询问以来有没有写过账本，读完即清。"""
+    global _dirty
+    was, _dirty = _dirty, False
+    return was
 
 
 def read_all(root: Path) -> list[dict]:
