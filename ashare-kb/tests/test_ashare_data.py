@@ -8,13 +8,11 @@ inconclusive，不能是任何一种结论。那才是会让库撒谎的分支�
 from __future__ import annotations
 
 import datetime as _dt
-import sys
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "verify"))
+ROOT = Path(__file__).resolve().parent.parent   # sys.path 见 conftest.py
 
 import ashare_data as ad  # noqa: E402
 

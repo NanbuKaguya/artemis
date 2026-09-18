@@ -9,17 +9,17 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parent.parent   # sys.path 见 conftest.py
 
 from kb_cli import db, ledger  # noqa: E402
 from kb_cli.__main__ import main  # noqa: E402
 from kb_cli.ids import claim_id  # noqa: E402
+
+import kbverify as kv  # noqa: E402
 
 TODAY = _dt.date.today().isoformat()
 
@@ -299,9 +299,9 @@ def install_kbverify(root):
         (ROOT / "verify" / "kbverify.py").read_text("utf-8"), encoding="utf-8")
 
 
-def snapshot(root, text):
+def snapshot(root, text, name="yuanwen.txt"):
     (root / "sources").mkdir(parents=True, exist_ok=True)
-    (root / "sources" / "yuanwen.txt").write_text(text, encoding="utf-8")
+    (root / "sources" / name).write_text(text, encoding="utf-8")
 
 
 def setup_snapshot_claim(kb, text=None):
@@ -604,3 +604,119 @@ def test_doctor_warns_when_the_digest_lags(kb, capsys):
 def test_doctor_on_a_missing_kb_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("ASHARE_KB_ROOT", str(tmp_path))
     assert run("doctor", "--offline") == 1
+
+
+# ---------------------------------------------------------------------------
+# kbverify：排版差异不该算验证失败，但数字边界必须干净
+# ---------------------------------------------------------------------------
+
+def test_normalize_folds_layout_not_meaning():
+    """PDF 换行、全角编码都不是内容差异。"""
+    assert kv.normalize("50 万\n元") == "50万元"
+    assert kv.normalize("（２０个交易日）") == "(20个交易日)"
+    assert kv.normalize("不\t低\r\n于") == "不低于"
+
+
+def test_normalize_does_not_fold_different_wordings():
+    """normalize 只能消除同一字符串的不同写法。它一旦开始消除不同的说法，
+    验证就比断言宽松了。"""
+    assert kv.normalize("五十万元") != kv.normalize("50万元")
+    assert kv.normalize("二十个交易日") != kv.normalize("20个交易日")
+
+
+@pytest.mark.parametrize("text,phrase,expected", [
+    ("不低于人民币50万元", "50万元", True),
+    ("不低于人民币150万元", "50万元", False),   # 门槛改成150万，不能还说 HOLDS
+    ("不低于人民币500万元", "50万元", False),
+    ("参与证券交易满24个月", "24个月", True),
+    ("参与证券交易满124个月", "24个月", False),
+    ("前20个交易日", "20个交易日", True),
+    ("前120个交易日", "20个交易日", False),
+    ("融券卖出", "融券卖出", True),             # 非数字短语不受边界规则影响
+])
+def test_digit_boundaries(text, phrase, expected):
+    """往 verified 方向错比漏验证危险得多。"""
+    assert kv.contains(text, phrase) is expected
+
+
+def test_date_variants_covers_the_chinese_numeral_form():
+    v = kv.date_variants(2024, 4, 12)
+    assert "2024年4月12日" in v
+    assert "二〇二四年四月十二日" in v
+    assert "2024-04-12" in v
+
+
+@pytest.mark.parametrize("n,cn", [(1, "一"), (10, "十"), (12, "十二"),
+                                  (20, "二十"), (24, "二十四"), (31, "三十一")])
+def test_cn_num(n, cn):
+    assert kv._cn_num(n) == cn
+
+
+# ---------------------------------------------------------------------------
+# 候选组与多份快照
+# ---------------------------------------------------------------------------
+
+ALT_SCRIPT = (
+    "import kbverify as kv\n"
+    "kv.require_phrases('yuanwen.txt', kv.date_variants(2024, 4, 12), ('1+N', '1＋N'))\n"
+)
+
+
+def test_chinese_numeral_date_still_verifies(kb):
+    """原来押注会失败的那一幕：正文写中文数字日期。候选组把它接住了。"""
+    install_kbverify(kb)
+    snapshot(kb, "……二〇二四年四月十二日印发……“1+N”政策体系……")
+    cid = seed_one(kb, tier=1, layer="institutional")
+    assert run("verify", cid, "--script", write_script(kb, f"{cid}.py", ALT_SCRIPT)) == 0
+
+
+def test_a_genuinely_absent_phrase_is_still_inconclusive(kb):
+    """候选组放宽的是写法，不是事实。少一个成分照样不算通过。"""
+    install_kbverify(kb)
+    snapshot(kb, "……二〇二四年四月十二日印发……")   # 没有 1+N
+    cid = seed_one(kb, tier=1, layer="institutional")
+    assert run("verify", cid, "--script", write_script(kb, f"{cid}.py", ALT_SCRIPT)) == 2
+
+
+ACROSS_SCRIPT = (
+    "import kbverify as kv\n"
+    "kv.require_across({'a.txt': ('当日不得卖出',), 'b.txt': ('买券还券',)})\n"
+)
+
+
+def setup_across(kb, **files):
+    install_kbverify(kb)
+    for name, text in files.items():
+        snapshot(kb, text, name=f"{name}.txt")
+    cid = seed_one(kb, tier=1, layer="institutional")
+    return cid, write_script(kb, f"{cid}.py", ACROSS_SCRIPT)
+
+
+def test_require_across_needs_every_snapshot(kb):
+    cid, script = setup_across(kb, a="当日买入的证券，当日不得卖出")  # 缺 b
+    assert run("verify", cid, "--script", script) == 2
+
+
+def test_require_across_needs_every_phrase(kb):
+    cid, script = setup_across(kb, a="当日买入的证券，当日不得卖出", b="融券卖出")
+    assert run("verify", cid, "--script", script) == 2   # b 里没有"买券还券"
+
+
+def test_require_across_holds_when_all_present(kb):
+    cid, script = setup_across(kb, a="当日买入的证券，当日不得卖出",
+                               b="融券卖出后可以买券还券")
+    assert run("verify", cid, "--script", script) == 0
+
+
+def test_the_three_institutional_scripts_are_bound_and_inconclusive(kb):
+    """仓库里那三个脚本在没有快照时必须退 2 —— 一条都不许自己变成 verified。"""
+    install_kbverify(kb)
+    for name in ("inst-69d8655b", "inst-625f832d", "inst-623b43f8"):
+        src = (ROOT / "verify" / f"{name}.py").read_text("utf-8")
+        cid = seed_one(kb, tier=1, layer="institutional")
+        rc = run("verify", cid, "--script", write_script(kb, f"{cid}.py", src))
+        assert rc == 2, f"{name} 在没有快照时没有退 2"
+        assert conn_of(kb).execute(
+            "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "lead"
+        conn_of(kb).execute("DELETE FROM claim WHERE id=?", (cid,))
+        conn_of(kb).commit()

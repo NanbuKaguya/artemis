@@ -15,9 +15,20 @@
 
 ```
 gov-2024-04-12-guojiutiao.txt
-sse-kechuangban-jiaoyi-guize.pdf
+sse-kechuangban-shidangxing.txt
 csrc-2025-zhongchangqi-zijin.pdf
 ```
+
+## 目前有脚本在等的快照
+
+| 文件名 | 取自 | 给哪条断言 |
+|---|---|---|
+| `gov-2024-04-12-guojiutiao.txt` | gov.cn《关于加强监管防范风险推动资本市场高质量发展的若干意见》 | `inst-69d8655b` |
+| `sse-kechuangban-shidangxing.txt` | 上交所 科创板股票交易特别规定 / 投资者适当性管理办法 | `inst-625f832d` |
+| `sse-jiaoyi-guize.txt` | 上交所《交易规则》含回转交易那一节 | `inst-623b43f8` |
+| `sse-rongzirongquan-xize.txt` | 上交所《融资融券交易实施细则》 | `inst-623b43f8` |
+
+文件名不是硬性的 —— 改了就同步改脚本里的常量和 `kb source` 的 `--src`。
 
 ## 纪律
 
