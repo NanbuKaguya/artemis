@@ -187,6 +187,10 @@ def _insert(conn: sqlite3.Connection, row: dict) -> None:
             [row[c] for c in cols],
         )
     except sqlite3.IntegrityError as exc:
+        # 失败的 INSERT 会把隐式事务留在那里，同一进程里后续的写全部
+        # database is locked。一条命令一个进程时看不见（进程退出就回滚了），
+        # 但任何在一个进程里循环调 main() 的代码都会在第一次约束失败后全线崩。
+        conn.rollback()
         raise KBError(_explain_integrity(exc)) from exc
     conn.commit()
 
@@ -195,6 +199,12 @@ def _explain_integrity(exc: Exception) -> str:
     msg = str(exc)
     if "L4/L5" in msg:
         return f"质量门拦截: {msg}"
+    if "instr(statement" in msg:
+        return ("断言正文里不能有换行 —— 断言是一句话。\n"
+                "  这不是格式洁癖：带换行的正文能在 digest 里伪造出整节"
+                "「已验证断言」，\n"
+                "  而 digest 是下一个会话唯一会读的东西。\n"
+                "  长的背景信息放 --note，或者拆成两条断言。")
     if "status <> 'verified'" in msg or "CHECK constraint" in msg:
         return (f"约束拦截: {msg}\n"
                 "  verified 必须同时有 last_verified 和 verify_script；"
@@ -243,6 +253,7 @@ def _update(conn: sqlite3.Connection, row: dict) -> None:
             [row[c] for c in cols] + [row["id"]],
         )
     except sqlite3.IntegrityError as exc:
+        conn.rollback()
         raise KBError(_explain_integrity(exc)) from exc
     conn.commit()
 

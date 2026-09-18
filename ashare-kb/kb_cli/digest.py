@@ -25,12 +25,35 @@ CONTRACT = """## 操作契约 —— 读到这里的 Claude 请照做
 """
 
 
+def inline(text: object) -> str:
+    """把断言文本压成单行，再放进 Markdown。
+
+    **这是这个文件里最重要的一个函数。**
+
+    digest 是整个系统唯一真正起作用的产物 —— 下一个会话的 Claude 只读它，
+    而且契约第一条告诉它"以库为准，你是错的那个"。断言文本的来源是
+    财经媒体和自媒体转述，也就是我从别处粘进来的东西。
+
+    不压成单行的话，一条 L5 线索只要在正文里带上换行和 `## verified 断言`，
+    digest 里就会出现一整节伪造的已验证断言，带伪造的 id、伪造的来源等级、
+    伪造的验证日期。下一个 Claude 会照单全收 —— 它没有别的依据。
+
+    所有的质量门守的都是数据库。digest 是从库里的文本拼出来的，
+    渲染这一步不设防，前面那些门就全部绕过去了：
+    gates guard the namespace, writes bypass via bytes。
+
+    压成单行就够了：Markdown 的结构（标题、列表、代码围栏）都必须从行首开始，
+    没有换行就造不出行首。而且断言本来就该是"一句话"。
+    """
+    return " ".join(str("" if text is None else text).split())
+
+
 def _fmt_claim(r: sqlite3.Row) -> str:
-    out = [f"- **{r['id']}** — {r['statement']}"]
-    out.append(f"  - 推翻条件：{r['if_wrong']}")
-    src = f"L{r['source_tier']} · {r['source_ref']}"
+    out = [f"- **{inline(r['id'])}** — {inline(r['statement'])}"]
+    out.append(f"  - 推翻条件：{inline(r['if_wrong'])}")
+    src = f"L{int(r['source_tier'])} · {inline(r['source_ref'])}"
     if r["last_verified"]:
-        src += f" · 最后验证 {r['last_verified']}"
+        src += f" · 最后验证 {inline(r['last_verified'])}"
     out.append(f"  - 来源：{src}")
     return "\n".join(out)
 
@@ -44,7 +67,7 @@ def _section(conn, title, sql, params=(), empty=None) -> str:
     for r in rows:
         if "layer" in r.keys() and r["layer"] != layer_seen:
             layer_seen = r["layer"]
-            body.append(f"\n### {layer_seen}\n")
+            body.append(f"\n### {inline(layer_seen)}\n")
         body.append(_fmt_claim(r))
     return "\n".join(body) + "\n"
 
