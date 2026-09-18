@@ -194,3 +194,50 @@ def test_every_wanted_claim_has_a_verify_script():
     """光有快照没有脚本，取回来也验不了。"""
     for name, (cid, _, _) in fetch.WANTED.items():
         assert (ROOT / "verify" / f"{cid}.py").exists(), f"{cid} 没有验证脚本"
+
+
+# ---------------------------------------------------------------------------
+# 快照名：verify 脚本的路径早就有这道检查，快照这边漏了
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", [
+    "../../escaped.txt", "../x.txt", "a/b.txt", "/abs.txt",
+    "..", ".", "", "   ",
+])
+def test_snapshot_names_cannot_escape_sources(kb, name):
+    """不校验的话 kb fetch ../../x 会把文件写到库外面去。"""
+    with pytest.raises(KBError, match="不能带路径"):
+        fetch.write_snapshot(kb, name, b"x" * 600, "text/plain", "", "", False)
+
+
+def test_a_plain_name_is_accepted(kb):
+    path, _ = fetch.write_snapshot(
+        kb, "gov-2024.txt", b"x" * 600, "text/plain", "", "", False)
+    assert path.parent == kb / "sources"
+
+
+def test_surrounding_whitespace_is_trimmed(kb):
+    path, meta = fetch.write_snapshot(
+        kb, "  gov-2024.txt  ", b"x" * 600, "text/plain", "", "", False)
+    assert path.name == "gov-2024.txt"
+    assert meta["snapshot"] == "gov-2024.txt"
+
+
+def test_the_meta_suffix_is_reserved(kb):
+    """.meta.json 是来源记录的命名空间。
+
+    让快照占用它的话，另一份快照的来源记录会把这份快照的正文悄悄盖掉 ——
+    而 sources/ 存在的唯一理由就是不让证据消失。
+    """
+    with pytest.raises(KBError, match="专用后缀"):
+        fetch.write_snapshot(kb, "a.txt.meta.json", b"x" * 600,
+                             "text/plain", "", "", False)
+
+
+def test_a_sidecar_never_clobbers_an_existing_file(kb):
+    """覆盖检查要同时守正文和来源记录两条路径。"""
+    (kb / "sources").mkdir(parents=True, exist_ok=True)
+    (kb / "sources" / "a.txt.meta.json").write_text("别人的东西", encoding="utf-8")
+    with pytest.raises(KBError, match="已存在"):
+        fetch.write_snapshot(kb, "a.txt", b"x" * 600, "text/plain", "", "", False)
+    assert (kb / "sources" / "a.txt.meta.json").read_text("utf-8") == "别人的东西"

@@ -137,13 +137,22 @@ def check_verified_evidence(root: Path, conn: sqlite3.Connection) -> list[tuple[
     抓不到它，制度层就白做了。
     """
     rows = conn.execute(
-        "SELECT id, verify_script, evidence FROM claim WHERE status='verified'"
-    ).fetchall()
+        "SELECT id, verify_script, evidence, last_verified FROM claim "
+        "WHERE status='verified'").fetchall()
     if not rows:
         return [(OK, "没有 verified 断言可查（这个库还没挣到东西）")]
 
+    today = _dt.date.today().isoformat()
     out, bad, compared = [], 0, 0
     for r in rows:
+        # 未来的验证日期让这条断言对淘汰机制永久免疫：
+        # kb stale 算 今天 - last_verified，负数永远超不过阈值。
+        # 来路可以是机器时钟不准，也可以是手改过的账本。
+        if r["last_verified"] and r["last_verified"] > today:
+            out.append((FAIL, f"{r['id']}: 验证日期是未来（{r['last_verified']}）—— "
+                              "它对 kb stale 永久免疫。核对机器时钟，"
+                              "然后重跑 kb verify"))
+            bad += 1
         script = r["verify_script"]
         if not script or not (root / script).exists():
             out.append((FAIL, f"{r['id']}: 验证脚本 {script or '（空）'} 不存在 —— "

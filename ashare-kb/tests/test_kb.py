@@ -1048,3 +1048,49 @@ def test_tombstone_table_survives_newlines_and_pipes(kb):
 ])
 def test_inline(raw, want):
     assert inline(raw) == want
+
+
+# ---------------------------------------------------------------------------
+# 事务与时钟
+# ---------------------------------------------------------------------------
+
+def test_a_failed_write_does_not_lock_the_database(kb):
+    """失败的 INSERT 会把隐式事务留着不回滚。
+
+    一条命令一个进程时看不见（进程退出就回滚了），但任何在一个进程里
+    循环调 main() 的代码都会在第一次约束失败之后全线 database is locked。
+    """
+    assert run("lead", "断言甲", "--layer", "structural", "--tier", "2",
+               "--src", "s", "--if-wrong", "   ") == 1        # CHECK 失败
+    assert run("lead", "断言乙", "--layer", "structural", "--tier", "2",
+               "--src", "s", "--if-wrong", "w") == 0          # 后续仍要能写
+    assert conn_of(kb).execute("SELECT count(*) FROM claim").fetchone()[0] == 1
+
+
+def test_a_failed_update_does_not_lock_the_database(kb):
+    cid = seed_one(kb)
+    conn = conn_of(kb)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE claim SET if_wrong='' WHERE id=?", (cid,))
+    conn.rollback()
+    assert run("lead", "另一条", "--layer", "structural", "--tier", "2",
+               "--src", "s", "--if-wrong", "w") == 0
+
+
+def test_doctor_flags_a_future_verification_date(kb):
+    """未来的验证日期让这条断言对 kb stale 永久免疫（今天 - 未来 = 负数）。"""
+    cid = make_verified(kb)
+    conn = conn_of(kb)
+    conn.execute("UPDATE claim SET last_verified='2099-01-01' WHERE id=?", (cid,))
+    conn.commit()
+    run("stale")
+    assert db.connect(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "verified"
+    assert run("doctor", "--offline") == 1
+
+
+@pytest.mark.parametrize("col", ["statement", "if_wrong", "source_ref"])
+def test_ideographic_space_is_not_a_value(kb, col):
+    """SQLite 的 trim(X) 只去半角空格 —— 少一个字符，'　' 就能冒充"有值"。"""
+    with pytest.raises(sqlite3.IntegrityError):
+        insert(conn_of(kb), base_row(**{col: "\u3000\u3000"}))

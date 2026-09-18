@@ -11,7 +11,8 @@
 
 PRAGMA foreign_keys = ON;
 
--- 空白字符集：空格/制表/换行/回车。SQLite 的 trim(X) 只去空格。
+-- 空白字符集：空格/制表/换行/回车/全角空格(U+3000)。
+-- SQLite 的 trim(X) 只去半角空格 —— 少一个字符，'　' 就能冒充"有值"。
 
 CREATE TABLE IF NOT EXISTS claim (
   id            TEXT PRIMARY KEY,
@@ -21,17 +22,17 @@ CREATE TABLE IF NOT EXISTS claim (
   -- 换行，它就能在 digest 里伪造出整节"已验证断言" —— 而 digest 是下一个
   -- 会话唯一会读的东西。渲染那一步也会压成单行，这里是第二道。
   statement     TEXT NOT NULL
-                CHECK(length(trim(statement, ' ' || char(9) || char(10) || char(13))) > 0)
+                CHECK(length(trim(statement, ' ' || char(9) || char(10) || char(13) || char(12288))) > 0)
                 CHECK(instr(statement, char(10)) = 0 AND instr(statement, char(13)) = 0),
 
   -- 只有两层。state 层被 CHECK 挡在库外。
   layer         TEXT NOT NULL CHECK(layer IN ('institutional','structural')),
 
   -- 什么观测推翻它。空 = 不可证伪 = 不是断言。
-  if_wrong      TEXT NOT NULL CHECK(length(trim(if_wrong, ' ' || char(9) || char(10) || char(13))) > 0),
+  if_wrong      TEXT NOT NULL CHECK(length(trim(if_wrong, ' ' || char(9) || char(10) || char(13) || char(12288))) > 0),
 
   source_tier   INTEGER NOT NULL CHECK(source_tier BETWEEN 1 AND 5),
-  source_ref    TEXT NOT NULL CHECK(length(trim(source_ref, ' ' || char(9) || char(10) || char(13))) > 0),
+  source_ref    TEXT NOT NULL CHECK(length(trim(source_ref, ' ' || char(9) || char(10) || char(13) || char(12288))) > 0),
 
   status        TEXT NOT NULL CHECK(status IN ('lead','verified','falsified','stale')),
 
@@ -58,7 +59,7 @@ CREATE TABLE IF NOT EXISTS claim (
 
   -- verified 必须有验证脚本。人工"我读过了"是这套系统唯一的后门，焊死。
   CHECK (status <> 'verified' OR (verify_script IS NOT NULL
-         AND length(trim(verify_script, ' ' || char(9) || char(10) || char(13))) > 0))
+         AND length(trim(verify_script, ' ' || char(9) || char(10) || char(13) || char(12288))) > 0))
 );
 
 CREATE INDEX IF NOT EXISTS claim_status_idx ON claim(status);

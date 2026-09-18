@@ -187,6 +187,10 @@ def _insert(conn: sqlite3.Connection, row: dict) -> None:
             [row[c] for c in cols],
         )
     except sqlite3.IntegrityError as exc:
+        # 失败的 INSERT 会把隐式事务留在那里，同一进程里后续的写全部
+        # database is locked。一条命令一个进程时看不见（进程退出就回滚了），
+        # 但任何在一个进程里循环调 main() 的代码都会在第一次约束失败后全线崩。
+        conn.rollback()
         raise KBError(_explain_integrity(exc)) from exc
     conn.commit()
 
@@ -249,6 +253,7 @@ def _update(conn: sqlite3.Connection, row: dict) -> None:
             [row[c] for c in cols] + [row["id"]],
         )
     except sqlite3.IntegrityError as exc:
+        conn.rollback()
         raise KBError(_explain_integrity(exc)) from exc
     conn.commit()
 

@@ -187,19 +187,45 @@ def http_get(url: str) -> tuple[bytes, str]:
         raise KBError(f"取不到 {url}: {reason}") from None
 
 
+META_SUFFIX = ".meta.json"
+
+
 def meta_path(snapshot: Path) -> Path:
-    return snapshot.with_name(snapshot.name + ".meta.json")
+    return snapshot.with_name(snapshot.name + META_SUFFIX)
+
+
+def check_name(name: str) -> str:
+    """快照名必须是 sources/ 下的一个纯文件名。
+
+    不校验的话 `kb fetch ../../x.txt` 会把文件写到库外面去 ——
+    verify 脚本的路径早就有这道检查，快照这边漏了，不一致本身就是味道。
+    """
+    clean = name.strip()
+    if not clean or clean in (".", "..") or Path(clean).name != clean:
+        raise KBError(
+            f"快照名只能是 sources/ 下的一个文件名，不能带路径: {name!r}\n"
+            "  看 kb fetch --list 里的名字。")
+    if clean.endswith(META_SUFFIX):
+        # .meta.json 是来源记录的命名空间。让快照占用它的话，
+        # 另一份快照的来源记录会把这份快照的正文悄悄盖掉 ——
+        # 而 sources/ 存在的唯一理由就是不让证据消失。
+        raise KBError(f"{META_SUFFIX} 是来源记录专用后缀，快照不能叫这个名字: {name!r}")
+    return clean
 
 
 def write_snapshot(root: Path, name: str, raw: bytes, content_type: str,
                    url: str, source_note: str, force: bool) -> tuple[Path, dict]:
+    name = check_name(name)
     path = root / "sources" / name
-    if path.exists() and not force:
-        raise KBError(
-            f"{path.relative_to(root)} 已存在。\n"
-            "  原文修订了就存一份新快照（换个文件名），不要原地覆盖 ——\n"
-            "  覆盖掉的话，依赖旧快照的断言就失去了当初的依据。\n"
-            "  确实要覆盖就加 --force。")
+    # 两条路径都要查：正文和来源记录。只守正文的话，
+    # 一份来源记录可以把另一份快照的正文悄悄盖掉。
+    for target in (path, meta_path(path)):
+        if target.exists() and not force:
+            raise KBError(
+                f"{target.relative_to(root)} 已存在。\n"
+                "  原文修订了就存一份新快照（换个文件名），不要原地覆盖 ——\n"
+                "  覆盖掉的话，依赖旧快照的断言就失去了当初的依据。\n"
+                "  确实要覆盖就加 --force。")
 
     text, extractor = extract(raw, content_type, url or name)
     path.parent.mkdir(parents=True, exist_ok=True)
