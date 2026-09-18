@@ -24,13 +24,6 @@ import kbverify as kv  # noqa: E402
 TODAY = _dt.date.today().isoformat()
 
 
-@pytest.fixture()
-def kb(tmp_path, monkeypatch):
-    monkeypatch.setenv("ASHARE_KB_ROOT", str(tmp_path))
-    db.init(tmp_path)
-    return tmp_path
-
-
 def run(*argv) -> int:
     return main(list(argv))
 
@@ -246,6 +239,42 @@ def test_a_crashing_script_never_writes_a_tombstone(kb):
     cid = seed_one(kb)
     run("verify", cid, "--script", write_script(kb, f"{cid}.py", CRASH))
     assert not (kb / "ledger" / "falsified" / f"{cid}.md").exists()
+
+
+def test_an_inconclusive_reverify_demotes_a_verified_claim(kb):
+    """快照变了、重验说"不确定"，断言不能留在 verified。
+
+    这正是这个库要抓的场景：法规修订 -> 重新取快照 -> 短语不在了。
+    留在 verified 的话，库会一直替旧规则背书 —— 而且悄无声息。
+    落点是 stale（需要重新确认）而不是 falsified（并不知道它假）。
+    """
+    cid = seed_one(kb)
+    write_script(kb, f"{cid}.py", HOLDS)
+    assert run("verify", cid, "--script", f"verify/{cid}.py") == 0
+
+    write_script(kb, f"{cid}.py", BROKEN)          # 证据没了
+    assert run("verify", cid, "--script", f"verify/{cid}.py") == 2
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "stale"
+    assert "stale 1" in (kb / "digest" / "latest.md").read_text("utf-8")
+    assert ledger.history(kb, cid)[-1]["action"] == "stale"
+
+
+def test_an_inconclusive_run_does_not_touch_a_lead(kb):
+    """lead 没什么可失去的 —— 不确定就是不确定，不改状态。"""
+    cid = seed_one(kb)
+    assert run("verify", cid, "--script", write_script(kb, f"{cid}.py", BROKEN)) == 2
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "lead"
+
+
+def test_an_inconclusive_run_does_not_resurrect_a_falsified_claim(kb):
+    """已经被打脸的断言，重验说"不确定"不该把它变成 stale（那是升级）。"""
+    cid = seed_one(kb)
+    run("falsify", cid, "--why", "制度变了")
+    assert run("verify", cid, "--script", write_script(kb, f"{cid}.py", BROKEN)) == 2
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "falsified"
 
 
 def test_script_binding_survives_an_inconclusive_run(kb):

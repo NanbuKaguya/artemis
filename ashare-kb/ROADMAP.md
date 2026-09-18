@@ -37,6 +37,15 @@
 三条制度层断言的脚本都已写好并绑定，各自在等自己的快照。
 **存全文，不存摘要** —— 摘要是你的转述，转述就降级成 L4 了。
 
+```bash
+./kb fetch --list                          # 还缺哪些、各给哪条断言
+./kb fetch <名字> --url <原址>              # 抽文 + 记来源(sha256)
+./kb fetch <名字> --from-file <下载的文件> --url <原址>   # PDF / 门户后面的
+```
+
+URL 要你自己找 —— 我不确定这四份文件的确切地址，写一个会 404 的链接
+比不写更糟：它看起来像是验证过的。
+
 - [ ] `sources/gov-2024-04-12-guojiutiao.txt` → `./kb source inst-69d8655b --src ...`
       → `./kb verify inst-69d8655b`
 - [ ] `sources/sse-kechuangban-shidangxing.txt` → `inst-625f832d`

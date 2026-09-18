@@ -13,3 +13,20 @@ ROOT = Path(__file__).resolve().parent.parent
 for path in (ROOT, ROOT / "verify"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
+
+
+import pytest  # noqa: E402
+
+from kb_cli import db  # noqa: E402
+
+
+@pytest.fixture()
+def kb(tmp_path, monkeypatch):
+    """一个空库，根目录指向 tmp_path。
+
+    放在 conftest 里而不是某个测试文件里 —— 多个文件都要用，
+    留在一个文件里就会变成跨文件的隐式依赖，只在单独跑时才暴露。
+    """
+    monkeypatch.setenv("ASHARE_KB_ROOT", str(tmp_path))
+    db.init(tmp_path)
+    return tmp_path

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import digest as digest_mod
 from . import doctor as doctor_mod
+from . import fetch as fetch_mod
 from . import ledger, tombstone
 from .db import (
     STALE_DEFAULT,
@@ -294,8 +295,28 @@ def cmd_verify(args) -> int:
         print("  脚本崩溃时 Python 的退出码也是 1，只看退出码会把它读成"
               "「断言被打脸」。用 kbverify.holds()/falsified() 明确声明结论。")
     else:
-        print(f"\n? 退出码 {proc.returncode} = 不确定（脚本坏了或数据缺失）。"
-              f"状态不变: {row['status']}")
+        print(f"\n? 退出码 {proc.returncode} = 不确定（脚本坏了或数据缺失）。")
+
+    # 不确定不会把 lead 变成别的东西 —— 没学到东西就不改状态。
+    # 但一条**已经是 verified** 的断言重验回来"不确定"，留着它不动是另一个
+    # 方向的同一个错误：库继续声称一件当前证据支持不了的事。
+    #
+    # 这正是这个库要抓的场景：法规修订 -> 重新取快照 -> 短语不在了 ->
+    # 脚本说不确定。留在 verified 的话，库会一直替旧规则背书。
+    #
+    # 正确的落点不是 falsified（并不知道它假），是 stale：需要重新确认，
+    # 先别当真。取数临时失败也会走到这里 —— 那点代价换的是
+    # "verified 永远有当前证据撑着"，值。
+    if row["status"] == "verified":
+        row["status"] = "stale"
+        _update(conn, row)
+        ledger.append(root, "stale", row["id"], row,
+                      reason="重验返回不确定", rc=proc.returncode, evidence=evidence)
+        print(f"  {row['id']}: verified -> stale。原本是 verified，"
+              "但当前证据支持不了它了 —— 查清楚再 kb verify，"
+              "确认制度真的变了就 kb falsify。")
+    else:
+        print(f"  状态不变: {row['status']}")
     return 2
 
 
@@ -453,6 +474,60 @@ def cmd_digest(args) -> int:
         print(f"写入 {p.relative_to(root)}")
     _print_scoreboard(conn)
     return 0
+
+
+def cmd_fetch(args) -> int:
+    root = kb_root(args.root)
+    if args.list:
+        print("需要的快照（URL 要你自己找 —— 写死一个会 404 的链接比不写更糟，"
+              "它看起来像是验证过的）：\n")
+        for name, (cid, doc, where) in fetch_mod.WANTED.items():
+            exists = "已有" if (root / "sources" / name).exists() else "缺"
+            print(f"  [{exists}] {name}")
+            print(f"        {doc}")
+            print(f"        {where}  ->  {cid}\n")
+        return 0
+
+    if not args.name:
+        raise KBError("要取哪份快照？先看 kb fetch --list")
+    if not (args.url or args.from_file):
+        raise KBError("给 --url（直接抓）或 --from-file（手工下载的文件）")
+
+    if args.from_file:
+        src = Path(args.from_file).expanduser()
+        if not src.exists():
+            raise KBError(f"文件不存在: {src}")
+        raw, content_type = src.read_bytes(), ""
+        hint = str(src)
+    else:
+        print(f"GET {args.url}")
+        raw, content_type = fetch_mod.http_get(args.url)
+        hint = args.url
+
+    known = fetch_mod.WANTED.get(args.name)
+    path, meta = fetch_mod.write_snapshot(
+        root, args.name, raw, content_type or _guess_type(hint),
+        args.url or "", known[1] if known else "", args.force)
+
+    print(f"写入 {path.relative_to(root)}"
+          f"（{meta['text_chars']} 字，抽取器 {meta['extractor']}）")
+    print(f"     {fetch_mod.meta_path(path).relative_to(root)}"
+          f"  sha256 {meta['raw_sha256'][:16]}…")
+    if meta["text_chars"] < 500:
+        print("  ⚠ 正文太短，八成没抽对 —— 打开看一眼再往下走。")
+    if known:
+        print(f"\n接着跑：\n  kb source {known[0]} --src sources/{args.name}"
+              f"\n  kb verify {known[0]}")
+    return 0
+
+
+def _guess_type(hint: str) -> str:
+    low = hint.lower()
+    if low.endswith(".pdf"):
+        return "application/pdf"
+    if low.endswith((".html", ".htm")):
+        return "text/html"
+    return ""
 
 
 def cmd_doctor(args) -> int:
