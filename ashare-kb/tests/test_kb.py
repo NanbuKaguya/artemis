@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -328,9 +329,16 @@ def install_kbverify(root):
         (ROOT / "verify" / "kbverify.py").read_text("utf-8"), encoding="utf-8")
 
 
-def snapshot(root, text, name="yuanwen.txt"):
+# 法规原文不会只有两百字，短于此就是没抽对（扫描件、导航页）。
+# 所以 fixture 也要有真实长度 —— 不然测的是一个现实里不存在的形态。
+FILLER = "各省、自治区、直辖市人民政府，国务院各部委、各直属机构：" * 12
+
+
+def snapshot(root, text, name="yuanwen.txt", pad=True):
+    """pad=True 时补到真实长度；要测"没抽对"那条路就传 pad=False。"""
     (root / "sources").mkdir(parents=True, exist_ok=True)
-    (root / "sources" / name).write_text(text, encoding="utf-8")
+    body = f"{text}\n{FILLER}" if pad else text
+    (root / "sources" / name).write_text(body, encoding="utf-8")
 
 
 def setup_snapshot_claim(kb, text=None):
@@ -749,3 +757,144 @@ def test_the_three_institutional_scripts_are_bound_and_inconclusive(kb):
             "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "lead"
         conn_of(kb).execute("DELETE FROM claim WHERE id=?", (cid,))
         conn_of(kb).commit()
+
+
+# ---------------------------------------------------------------------------
+# 对抗性排查修掉的四个洞
+#
+# 共同形状：某条路径让一条断言比证据所支持的更"已验证"。
+# 至今的缺陷全是建别的东西时顺带撞出来的，没有一个是主动找出来的 ——
+# 下面这些是主动找的第一批。
+# ---------------------------------------------------------------------------
+
+LONG = "正文补足长度。" * 40
+
+
+def snap_claim(kb, text, phrase="关键短语", pad=True):
+    install_kbverify(kb)
+    snapshot(kb, text, name="s.txt", pad=pad)
+    script = write_script(
+        kb, "snap.py",
+        f"import kbverify as kv\nkv.require_phrases('s.txt', {phrase!r})\n")
+    cid = seed_one(kb, tier=1, layer="institutional")
+    return cid, script
+
+
+# --- A / F：verified 的证据变了或没了，库却还在背书 ----------------------
+
+def test_doctor_catches_a_verified_claim_whose_script_is_gone(kb):
+    """脚本没了 = 这条断言连复核都做不到，却还挂着 verified。"""
+    cid, script = snap_claim(kb, "这里有关键短语在内。" + LONG)
+    assert run("verify", cid, "--script", script) == 0
+    (kb / script).unlink()
+    assert run("doctor", "--offline") == 1
+
+
+def test_doctor_catches_a_snapshot_that_changed_after_verification(kb):
+    """法规修订、或 kb fetch --force 换掉快照。
+
+    这正是这个库存在的理由 ——「制度变化本身是最强的信号」。
+    抓不到它，制度层就白做了。
+    """
+    cid, script = snap_claim(kb, "这里有关键短语在内。" + LONG)
+    assert run("verify", cid, "--script", script) == 0
+    assert run("doctor", "--offline") == 0
+    snapshot(kb, "这里有关键短语在内。" + "换了内容。" * 40, name="s.txt")
+    assert run("doctor", "--offline") == 1
+
+
+def test_doctor_catches_a_snapshot_that_vanished(kb):
+    cid, script = snap_claim(kb, "这里有关键短语在内。" + LONG)
+    run("verify", cid, "--script", script)
+    (kb / "sources" / "s.txt").unlink()
+    assert run("doctor", "--offline") == 1
+
+
+def test_verify_records_the_evidence_fingerprint(kb):
+    cid, script = snap_claim(kb, "这里有关键短语在内。" + LONG)
+    run("verify", cid, "--script", script)
+    evidence = json.loads(conn_of(kb).execute(
+        "SELECT evidence FROM claim WHERE id=?", (cid,)).fetchone()[0])
+    digest = hashlib.sha256((kb / "sources" / "s.txt").read_bytes()).hexdigest()
+    assert evidence == {"s.txt": digest}
+
+
+def test_claims_without_snapshots_need_no_evidence(kb):
+    """结构层的证据是实时数据，没有指纹可取 —— 不该因此被报成失败。"""
+    cid = seed_one(kb)
+    write_script(kb, f"{cid}.py", HOLDS)
+    run("verify", cid, "--script", f"verify/{cid}.py")
+    assert conn_of(kb).execute(
+        "SELECT evidence FROM claim WHERE id=?", (cid,)).fetchone()[0] is None
+    assert run("doctor", "--offline") == 0
+
+
+# --- B：一行坏账本记录不能毁掉整个重建 -----------------------------------
+
+TAMPERED = {
+    "id": "strc-tampered", "statement": "自媒体断言", "layer": "structural",
+    "if_wrong": "w", "source_tier": 5, "source_ref": "公众号",
+    "status": "verified", "verify_script": "v.py", "last_verified": "2026-09-18",
+    "created_at": "2026-09-18", "stale_after_days": None,
+}
+
+
+def tamper(kb):
+    with ledger.events_path(kb).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": "2026-09-18T00:00:00+00:00", "action": "lead",
+                             "claim_id": "strc-tampered", "row": TAMPERED},
+                            ensure_ascii=False) + "\n")
+
+
+def test_one_bad_ledger_row_does_not_destroy_the_rebuild(kb):
+    """kb.sqlite 是 .gitignore 的，账本是唯一进 git 的状态。
+
+    中途 abort 的话合法断言一条都进不来 —— 一行坏记录 = 整个库不可恢复。
+    """
+    run("lead", "好断言一", "--layer", "structural", "--tier", "2",
+        "--src", "s", "--if-wrong", "w")
+    run("lead", "好断言二", "--layer", "institutional", "--tier", "1",
+        "--src", "s", "--if-wrong", "w")
+    tamper(kb)
+    assert run("rebuild", "--force") == 0
+    conn = db.connect(kb)
+    assert conn.execute("SELECT count(*) FROM claim").fetchone()[0] == 2
+    assert conn.execute(
+        "SELECT count(*) FROM claim WHERE id='strc-tampered'").fetchone()[0] == 0
+
+
+def test_a_bad_ledger_row_is_reported_not_swallowed(kb, capsys):
+    """跳过但不吭声，等于把门的告警吃掉了。"""
+    run("lead", "好断言", "--layer", "structural", "--tier", "2",
+        "--src", "s", "--if-wrong", "w")
+    tamper(kb)
+    run("rebuild", "--force")
+    out = capsys.readouterr().out
+    assert "跳过 1 条" in out and "strc-tampered" in out
+
+
+def test_a_fresh_clone_still_boots_with_a_bad_ledger_row(kb):
+    """kb init 走的是同一条重放路径 —— 新克隆不能因此起不来。"""
+    run("lead", "好断言", "--layer", "structural", "--tier", "2",
+        "--src", "s", "--if-wrong", "w")
+    tamper(kb)
+    db.db_path(kb).unlink()
+    assert run("init") == 0
+    assert db.connect(kb).execute("SELECT count(*) FROM claim").fetchone()[0] == 1
+
+
+# --- E：空/极短快照是取数的问题，不是短语的问题 --------------------------
+
+@pytest.mark.parametrize("text", ["", "首页 > 政策 > 正文"])
+def test_a_too_short_snapshot_blames_the_fetch_not_the_phrases(kb, capsys, text):
+    cid, script = snap_claim(kb, text, pad=False)
+    assert run("verify", cid, "--script", script) == 2
+    out = capsys.readouterr().out
+    assert "没抽对" in out
+    assert "核对短语写法" not in out       # 别把人往错方向支
+
+
+def test_a_long_snapshot_missing_the_phrase_blames_the_phrases(kb, capsys):
+    cid, script = snap_claim(kb, "正文很长但是没有那句话。" + LONG)
+    assert run("verify", cid, "--script", script) == 2
+    assert "核对短语写法" in capsys.readouterr().out

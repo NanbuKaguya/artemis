@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS claim (
   last_verified DATE,
   created_at    DATE NOT NULL,
 
+  -- verified 时脚本读过的快照及其 sha256（JSON）。
+  -- 作用是让 kb doctor 能发现"验的时候是这份原文，现在不是了" ——
+  -- 法规被悄悄修订时字节会变，而没有任何人会通知你。
+  evidence      TEXT,
+
   -- 衰减周期（天）。NULL = 不衰减。
   -- institutional 默认 NULL（制度不会自己变，变了你手动 falsify）。
   -- structural   默认 90。

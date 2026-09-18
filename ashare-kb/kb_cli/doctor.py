@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -122,6 +124,48 @@ def _strip_date(text: str) -> str:
                      if not ln.startswith("# ashare-kb digest"))
 
 
+def check_verified_evidence(root: Path, conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """每条 verified 断言：脚本还在吗？当初验的那份证据还是这份吗？
+
+    两种失效都是静默的，而且都让库继续替一件当前证据支持不了的事背书：
+
+      - 验证脚本被删/改名 —— 这条断言连复核都做不到了
+      - 快照被换掉（法规修订、kb fetch --force）—— 验的时候是那份原文，
+        现在不是了，而没有任何人会通知你
+
+    第二种正是这个库存在的理由：「制度变化本身是最强的信号」。
+    抓不到它，制度层就白做了。
+    """
+    rows = conn.execute(
+        "SELECT id, verify_script, evidence FROM claim WHERE status='verified'"
+    ).fetchall()
+    if not rows:
+        return [(OK, "没有 verified 断言可查（这个库还没挣到东西）")]
+
+    out, bad = [], 0
+    for r in rows:
+        script = r["verify_script"]
+        if not script or not (root / script).exists():
+            out.append((FAIL, f"{r['id']}: 验证脚本 {script or '（空）'} 不存在 —— "
+                              "这条断言已经无法复核，却还是 verified"))
+            bad += 1
+            continue
+        for name, recorded in json.loads(r["evidence"] or "{}").items():
+            path = root / "sources" / name
+            if not path.exists():
+                out.append((FAIL, f"{r['id']}: 快照 sources/{name} 没了 —— "
+                                  "验它的那份证据已经不在"))
+                bad += 1
+            elif hashlib.sha256(path.read_bytes()).hexdigest() != recorded:
+                out.append((FAIL, f"{r['id']}: 快照 sources/{name} 变了 —— "
+                                  "验的时候不是这份原文。重跑 kb verify；"
+                                  "确认制度真的改了就 kb falsify"))
+                bad += 1
+    if not bad:
+        out.append((OK, f"{len(rows)} 条 verified 断言的脚本与证据都还对得上"))
+    return out
+
+
 def check_akshare() -> list[tuple[str, str]]:
     try:
         import akshare as ak
@@ -170,7 +214,8 @@ def run(root: Path, offline: bool) -> int:
         print(f"{FAIL}  {exc}")
         return 1
 
-    results = check_layout(root) + check_gates(conn) + check_digest(root, conn)
+    results = (check_layout(root) + check_gates(conn)
+               + check_verified_evidence(root, conn) + check_digest(root, conn))
     results += check_akshare()
     if offline:
         results.append((WARN, "--offline：跳过取数检查"))

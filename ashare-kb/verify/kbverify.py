@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -24,6 +25,13 @@ from pathlib import Path
 RC_HOLDS = 0
 RC_FALSIFIED = 1
 RC_INCONCLUSIVE = 2
+
+# 低于这个长度的快照当作"没抽对"，而不是"短语找不到"
+MIN_SNAPSHOT_CHARS = 200
+
+# 这次运行读过哪些快照，以及它们当时的指纹。holds() 会把它报给 kb verify，
+# 于是"这条断言是对着哪份证据验过的"变成可复核的事实，而不是记忆。
+_evidence: dict[str, str] = {}
 
 
 def root() -> Path:
@@ -35,6 +43,10 @@ def claim_id() -> str:
 
 
 def holds(msg: str) -> None:
+    # 先报证据再报结论：kb verify 把这些指纹存进库，
+    # 之后 kb doctor 就能发现"验的时候是这份原文，现在不是了"。
+    for name, digest in sorted(_evidence.items()):
+        print(f"EVIDENCE: {name} {digest}")
     print(f"HOLDS: {msg}")
     sys.exit(RC_HOLDS)
 
@@ -60,10 +72,12 @@ def snapshot_text(name: str) -> str:
     if not path.exists():
         inconclusive(f"缺快照 sources/{name} —— 先把原文存下来再验证")
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_bytes()
     except OSError as exc:
         inconclusive(f"读不了 sources/{name}: {exc}")
-    return ""  # unreachable
+        return ""  # unreachable
+    _evidence[name] = hashlib.sha256(raw).hexdigest()
+    return raw.decode("utf-8", errors="replace")
 
 
 def normalize(text: str) -> str:
@@ -155,11 +169,18 @@ def check_phrases(name: str, *phrases) -> tuple[list[str], str | None]:
     """
     path = root() / "sources" / name
     if not path.exists():
-        return [], f"缺快照 sources/{name}"
+        return [], f"缺快照 sources/{name} —— 先把原文存下来再验证"
     try:
-        text = normalize(path.read_text(encoding="utf-8", errors="replace"))
+        raw = path.read_bytes()
     except OSError as exc:
         return [], f"读不了 sources/{name}: {exc}"
+    _evidence[name] = hashlib.sha256(raw).hexdigest()
+    text = normalize(raw.decode("utf-8", errors="replace"))
+
+    # 空快照报"核对短语写法"是误导 —— 问题在取数那一步，不在短语。
+    if len(text) < MIN_SNAPSHOT_CHARS:
+        return [], (f"sources/{name} 只有 {len(text)} 个字符 —— 八成没抽对"
+                    "（扫描版 PDF？抓到的是导航页？）。先打开看一眼")
 
     missing = []
     for phrase in phrases:
@@ -191,7 +212,7 @@ def require_phrases(name: str, *phrases) -> None:
     """
     missing, problem = check_phrases(name, *phrases)
     if problem:
-        inconclusive(problem + " —— 先把原文存下来再验证")
+        inconclusive(problem)
     if missing:
         inconclusive(
             f"sources/{name} 中找不到: " + " / ".join(missing)
@@ -214,7 +235,7 @@ def require_across(snapshots: dict[str, tuple], claim_note: str = "") -> None:
         missing += [f"{name}: {m}" for m in miss]
 
     if problems:
-        inconclusive("; ".join(problems) + " —— 先把原文存下来再验证")
+        inconclusive("; ".join(problems))
     if missing:
         inconclusive(
             "找不到: " + " / ".join(missing)
