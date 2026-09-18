@@ -8,6 +8,7 @@ falsify（制度变了，手动打脸）、digest（生成下次会话的 prime 
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import shlex
 import sqlite3
 import subprocess
@@ -16,6 +17,7 @@ from pathlib import Path
 
 from . import digest as digest_mod
 from . import doctor as doctor_mod
+from . import fetch as fetch_mod
 from . import ledger, tombstone
 from .db import (
     STALE_DEFAULT,
@@ -48,6 +50,7 @@ RC_FALSIFIED = 1    # 1 + "FALSIFIED:"  -> falsified
 # 其余一切（含 0/1 但缺哨兵）= 不确定 -> 不改状态
 MARK_HOLDS = "HOLDS:"
 MARK_FALSIFIED = "FALSIFIED:"
+MARK_EVIDENCE = "EVIDENCE:"
 
 
 def today() -> str:
@@ -63,9 +66,7 @@ def cmd_init(args) -> int:
     conn = db_init(root)
     print(f"库已就绪: {root}")
     if count_claims(conn) == 0 and ledger.events_path(root).exists():
-        n = _replay(root, conn)
-        if n:
-            print(f"从 ledger/events.jsonl 重放了 {n} 个事件")
+        _report_replay(*_replay(root, conn))
     _print_scoreboard(conn)
     return 0
 
@@ -79,28 +80,53 @@ def cmd_rebuild(args) -> int:
             raise KBError(f"{path} 已存在。确认要用账本覆盖它就加 --force")
         path.unlink()
     conn = db_init(root)
-    n = _replay(root, conn)
-    print(f"重建完成: 重放 {n} 个事件 -> {path}")
+    applied, skipped = _replay(root, conn)
+    print(f"重建完成 -> {path}")
+    _report_replay(applied, skipped)
     _print_scoreboard(conn)
     return 0
 
 
-def _replay(root: Path, conn: sqlite3.Connection) -> int:
-    """按时间顺序重放事件。每个事件带完整行快照，所以直接覆盖即可。"""
-    n = 0
-    for event in ledger.read_all(root):
+def _replay(root: Path, conn: sqlite3.Connection) -> tuple[int, list[str]]:
+    """按时间顺序重放事件。每个事件带完整行快照，所以直接覆盖即可。
+
+    **一条坏记录不能毁掉整个重建。** kb.sqlite 是 .gitignore 掉的，
+    ledger/events.jsonl 是唯一进 git 的状态 —— 中途 abort 的话，
+    合法的断言一条都进不来，而 kb init 走的也是这条路，
+    于是新克隆直接起不来。一行坏记录 = 整个库不可恢复。
+
+    被质量门拒掉的记录是**信息**（门起作用了），不是丢掉其余全部的理由。
+    所以逐条跳过并大声报出来，让人去修账本。
+    """
+    applied, skipped = 0, []
+    for i, event in enumerate(ledger.read_all(root), 1):
         row = event.get("row")
         if not row:
             continue
         cols = [c for c in row if c != "_"]
-        conn.execute(
-            f"INSERT OR REPLACE INTO claim ({','.join(cols)}) "
-            f"VALUES ({','.join('?' for _ in cols)})",
-            [row[c] for c in cols],
-        )
-        n += 1
+        try:
+            conn.execute(
+                f"INSERT OR REPLACE INTO claim ({','.join(cols)}) "
+                f"VALUES ({','.join('?' for _ in cols)})",
+                [row[c] for c in cols],
+            )
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+            skipped.append(f"第 {i} 条事件 ({event.get('claim_id', '?')}): {exc}")
+            continue
+        applied += 1
     conn.commit()
-    return n
+    return applied, skipped
+
+
+def _report_replay(applied: int, skipped: list[str]) -> None:
+    if applied:
+        print(f"从 ledger/events.jsonl 重放了 {applied} 个事件")
+    if skipped:
+        print(f"\n⚠ 跳过 {len(skipped)} 条被质量门拒绝的账本记录 —— "
+              "门起作用了，但账本里有脏数据：")
+        for line in skipped:
+            print(f"    {line}")
+        print("  去 ledger/events.jsonl 里改掉或删掉这些行，然后 kb rebuild --force。")
 
 
 # --------------------------------------------------------------------------
@@ -137,6 +163,7 @@ def cmd_lead(args) -> int:
         "last_verified": None,
         "created_at": today(),
         "stale_after_days": stale_after,
+        "evidence": None,
     }
     _insert(conn, row)
     ledger.append(root, "lead", cid, row, note=args.note)
@@ -275,6 +302,7 @@ def cmd_verify(args) -> int:
     marked = _marker(proc.stdout)
 
     if proc.returncode == RC_HOLDS and marked == MARK_HOLDS:
+        row["evidence"] = _parse_evidence(proc.stdout)
         row["status"] = "verified"
         row["last_verified"] = today()
         _update(conn, row)
@@ -294,9 +322,46 @@ def cmd_verify(args) -> int:
         print("  脚本崩溃时 Python 的退出码也是 1，只看退出码会把它读成"
               "「断言被打脸」。用 kbverify.holds()/falsified() 明确声明结论。")
     else:
-        print(f"\n? 退出码 {proc.returncode} = 不确定（脚本坏了或数据缺失）。"
-              f"状态不变: {row['status']}")
+        print(f"\n? 退出码 {proc.returncode} = 不确定（脚本坏了或数据缺失）。")
+
+    # 不确定不会把 lead 变成别的东西 —— 没学到东西就不改状态。
+    # 但一条**已经是 verified** 的断言重验回来"不确定"，留着它不动是另一个
+    # 方向的同一个错误：库继续声称一件当前证据支持不了的事。
+    #
+    # 这正是这个库要抓的场景：法规修订 -> 重新取快照 -> 短语不在了 ->
+    # 脚本说不确定。留在 verified 的话，库会一直替旧规则背书。
+    #
+    # 正确的落点不是 falsified（并不知道它假），是 stale：需要重新确认，
+    # 先别当真。取数临时失败也会走到这里 —— 那点代价换的是
+    # "verified 永远有当前证据撑着"，值。
+    if row["status"] == "verified":
+        row["status"] = "stale"
+        _update(conn, row)
+        ledger.append(root, "stale", row["id"], row,
+                      reason="重验返回不确定", rc=proc.returncode, evidence=evidence)
+        print(f"  {row['id']}: verified -> stale。原本是 verified，"
+              "但当前证据支持不了它了 —— 查清楚再 kb verify，"
+              "确认制度真的变了就 kb falsify。")
+    else:
+        print(f"  状态不变: {row['status']}")
     return 2
+
+
+def _parse_evidence(stdout: str) -> str | None:
+    """脚本报上来的 `EVIDENCE: <快照名> <sha256>`，存成 JSON。
+
+    记下来才能回答"这条断言是对着哪份证据验过的" —— 否则法规被改、
+    快照被 --force 换掉之后，库会一直替一份已经不存在的原文背书。
+    """
+    found = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith(MARK_EVIDENCE):
+            continue
+        parts = line[len(MARK_EVIDENCE):].split()
+        if len(parts) == 2 and len(parts[1]) == 64:
+            found[parts[0]] = parts[1]
+    return json.dumps(found, ensure_ascii=False, sort_keys=True) if found else None
 
 
 def _marker(stdout: str) -> str | None:
@@ -453,6 +518,60 @@ def cmd_digest(args) -> int:
         print(f"写入 {p.relative_to(root)}")
     _print_scoreboard(conn)
     return 0
+
+
+def cmd_fetch(args) -> int:
+    root = kb_root(args.root)
+    if args.list:
+        print("需要的快照（URL 要你自己找 —— 写死一个会 404 的链接比不写更糟，"
+              "它看起来像是验证过的）：\n")
+        for name, (cid, doc, where) in fetch_mod.WANTED.items():
+            exists = "已有" if (root / "sources" / name).exists() else "缺"
+            print(f"  [{exists}] {name}")
+            print(f"        {doc}")
+            print(f"        {where}  ->  {cid}\n")
+        return 0
+
+    if not args.name:
+        raise KBError("要取哪份快照？先看 kb fetch --list")
+    if not (args.url or args.from_file):
+        raise KBError("给 --url（直接抓）或 --from-file（手工下载的文件）")
+
+    if args.from_file:
+        src = Path(args.from_file).expanduser()
+        if not src.exists():
+            raise KBError(f"文件不存在: {src}")
+        raw, content_type = src.read_bytes(), ""
+        hint = str(src)
+    else:
+        print(f"GET {args.url}")
+        raw, content_type = fetch_mod.http_get(args.url)
+        hint = args.url
+
+    known = fetch_mod.WANTED.get(args.name)
+    path, meta = fetch_mod.write_snapshot(
+        root, args.name, raw, content_type or _guess_type(hint),
+        args.url or "", known[1] if known else "", args.force)
+
+    print(f"写入 {path.relative_to(root)}"
+          f"（{meta['text_chars']} 字，抽取器 {meta['extractor']}）")
+    print(f"     {fetch_mod.meta_path(path).relative_to(root)}"
+          f"  sha256 {meta['raw_sha256'][:16]}…")
+    if meta["text_chars"] < 500:
+        print("  ⚠ 正文太短，八成没抽对 —— 打开看一眼再往下走。")
+    if known:
+        print(f"\n接着跑：\n  kb source {known[0]} --src sources/{args.name}"
+              f"\n  kb verify {known[0]}")
+    return 0
+
+
+def _guess_type(hint: str) -> str:
+    low = hint.lower()
+    if low.endswith(".pdf"):
+        return "application/pdf"
+    if low.endswith((".html", ".htm")):
+        return "text/html"
+    return ""
 
 
 def cmd_doctor(args) -> int:

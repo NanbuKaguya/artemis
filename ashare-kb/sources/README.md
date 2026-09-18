@@ -30,6 +30,25 @@ csrc-2025-zhongchangqi-zijin.pdf
 
 文件名不是硬性的 —— 改了就同步改脚本里的常量和 `kb source` 的 `--src`。
 
+## 用 kb fetch 取
+
+```bash
+./kb fetch --list                                   # 还缺哪些
+./kb fetch gov-2024-04-12-guojiutiao.txt --url <原址>
+./kb fetch sse-jiaoyi-guize.txt --from-file ~/下载/guize.pdf --url <原址>
+```
+
+它会抽出纯文本，并把来源另存成 `<快照名>.meta.json`：URL、抓取时间、
+**原始字节的 sha256**。sha256 的用处是下次重抓能看出页面变没变 ——
+法规被悄悄修订时字节会变，而你不会收到任何通知。
+
+来源信息**不写进快照正文**：快照是 `require_phrases` 搜索的对象，
+而 URL 里很可能带着日期（`.../2024-04/12/...`），那正是 `date_variants()`
+的候选之一。写进去，快照就给自己作了证。
+
+PDF 需要 `pip install pypdf`。扫描件抽不出文字会直接报错 —— 存下来也没用，
+脚本在图片里找不到字。
+
 ## 纪律
 
 1. 存**全文**，不存摘要。摘要是你的转述，转述就降级成 L4 了。

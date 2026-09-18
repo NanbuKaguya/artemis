@@ -2,6 +2,9 @@
 # 只有 verify/ 下的脚本需要它 —— kb 本身零依赖，纯标准库。
 akshare>=1.18
 
+# 只有取 PDF 原文时需要（kb fetch 遇到 PDF 会提示）
+pypdf
+
 # 开发
 pytest
 ruff

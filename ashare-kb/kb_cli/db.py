@@ -36,6 +36,23 @@ def ensure_dirs(root: Path) -> None:
         (root / d).mkdir(parents=True, exist_ok=True)
 
 
+# 后加的可空列。kb.sqlite 是派生物，但已经存在的库不会因为
+# CREATE TABLE IF NOT EXISTS 而长出新列，所以连接时补一次。
+_ADDED_COLUMNS = {"evidence": "TEXT"}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claim'").fetchone()
+    if not exists:
+        return
+    have = {r[1] for r in conn.execute("PRAGMA table_info(claim)")}
+    for col, decl in _ADDED_COLUMNS.items():
+        if col not in have:
+            conn.execute(f"ALTER TABLE claim ADD COLUMN {col} {decl}")
+            conn.commit()
+
+
 def connect(root: Path, create: bool = False) -> sqlite3.Connection:
     path = db_path(root)
     if not path.exists() and not create:
@@ -43,6 +60,7 @@ def connect(root: Path, create: bool = False) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _migrate(conn)
     return conn
 
 

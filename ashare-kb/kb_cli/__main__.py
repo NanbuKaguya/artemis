@@ -14,6 +14,8 @@ EPILOG = """核心循环:
   kb lead "<断言>" --layer institutional --tier 4 --src <来源> --if-wrong "<什么观测推翻它>"
   kb source <id> --tier 1 --src sources/xxx.pdf      # 回溯：L4/L5 -> L1-L3
   kb verify <id> --script verify/<id>.py            # 只有脚本能把它变成 verified
+  kb fetch --list                                   # 还缺哪些原文快照
+  kb fetch <名字> --url <原址>                       # 取回来 + 记来源
   kb doctor                                         # 预检：门还在不在、数据源通不通
   kb stale                                          # 淘汰：过期的 verified 降级
   kb digest                                         # 生成 digest/latest.md
@@ -66,6 +68,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("stale", help="过期的 verified 降级为 stale")
     s.add_argument("--dry-run", action="store_true", help="只列出，不写库")
     s.set_defaults(func=c.cmd_stale)
+
+    s = sub.add_parser("fetch", help="把原文取回来存成快照，并留下可复核的来源记录")
+    s.add_argument("name", nargs="?", help="快照文件名，见 kb fetch --list")
+    s.add_argument("--url", help="直接抓这个地址；同时会记进 .meta.json")
+    s.add_argument("--from-file", dest="from_file",
+                   help="用手工下载的文件（PDF 常走这条）；配合 --url 记下原址")
+    s.add_argument("--list", action="store_true", help="列出还缺哪些快照")
+    s.add_argument("--force", action="store_true",
+                   help="覆盖已有快照 —— 会毁掉依赖它的断言的依据，想清楚")
+    s.set_defaults(func=c.cmd_fetch)
 
     s = sub.add_parser("doctor", help="预检：质量门还拦不拦得住、数据源今天还能不能用")
     s.add_argument("--offline", action="store_true", help="跳过取数检查")
