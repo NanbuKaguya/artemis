@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# kb —— 手动触发的知识库命令行。没有 cron，没有 daemon，机器晚上睡觉。
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="${here}${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m kb_cli "$@"

@@ -1,0 +1,14 @@
+# kb.sqlite 是派生物，不进 git。
+# 进 git 的是 ledger/events.jsonl —— 它可 diff、可审计、可 merge。
+# 拿到仓库后: ./kb init  （库为空时自动重放账本）
+# 数据库坏了:  ./kb rebuild --force
+kb.sqlite
+kb.sqlite-journal
+kb.sqlite-wal
+kb.sqlite-shm
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# akshare 逐只历史的本地缓存，可重建，不进 git
+.cache/

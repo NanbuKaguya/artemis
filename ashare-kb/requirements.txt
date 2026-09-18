@@ -1,0 +1,7 @@
+# 结构层断言的数据源。没有 Wind/Choice，用 akshare（东财等公开接口）。
+# 只有 verify/ 下的脚本需要它 —— kb 本身零依赖，纯标准库。
+akshare>=1.18
+
+# 开发
+pytest
+ruff
