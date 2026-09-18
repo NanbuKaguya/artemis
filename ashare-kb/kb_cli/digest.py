@@ -91,8 +91,10 @@ def render(conn: sqlite3.Connection) -> str:
 
     parts.append(
         "---\n\n"
-        "本文件由 `kb digest` 生成，不要手改。\n"
-        "会话末尾请跑 `kb stale`，然后重新生成本文件。\n"
+        "本文件由 `kb digest` 生成，不要手改 —— 任何改变库状态的命令都会重写它。\n"
+        "会话末尾请跑 `kb stale`。\n\n"
+        "下一步做什么写在 `ROADMAP.md` 里；这个库的操作契约和它最可能的死法\n"
+        "写在仓库根目录的 `CLAUDE.md` 里。\n"
     )
     return "\n".join(p for p in parts if p is not None)
 
