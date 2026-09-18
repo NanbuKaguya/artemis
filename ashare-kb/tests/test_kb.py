@@ -16,6 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent   # sys.path 见 conftest.py
 
+from kb_cli import commands as c  # noqa: E402
 from kb_cli import db, ledger  # noqa: E402
 from kb_cli.__main__ import main  # noqa: E402
 from kb_cli.ids import claim_id  # noqa: E402
@@ -1094,3 +1095,96 @@ def test_ideographic_space_is_not_a_value(kb, col):
     """SQLite 的 trim(X) 只去半角空格 —— 少一个字符，'　' 就能冒充"有值"。"""
     with pytest.raises(sqlite3.IntegrityError):
         insert(conn_of(kb), base_row(**{col: "\u3000\u3000"}))
+
+
+# ---------------------------------------------------------------------------
+# "没能确认"的每一扇门都要走同一条降级路径
+#
+# 退出码 2 那条路早先修过了，但 cmd_verify 里每一个 raise KBError 都绕开了
+# 那段逻辑 —— 同一个缺陷，换一扇门就能再进来一次。
+# ---------------------------------------------------------------------------
+
+HANG = "import time\ntime.sleep(60)\n"
+
+
+def verified_snapshot_claim(kb):
+    cid, script = snap_claim(kb, "这里有关键短语在内。" + LONG)
+    assert run("verify", cid, "--script", script) == 0
+    return cid
+
+
+def test_a_timeout_demotes_a_verified_claim(kb, monkeypatch):
+    monkeypatch.setattr(c, "VERIFY_TIMEOUT", 2)
+    cid = verified_snapshot_claim(kb)
+    assert run("verify", cid, "--script", write_script(kb, "hang.py", HANG)) == 1
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "stale"
+    assert ledger.history(kb, cid)[-1]["action"] == "stale"
+
+
+def test_a_missing_script_demotes_a_verified_claim(kb):
+    cid = verified_snapshot_claim(kb)
+    (kb / "verify" / "snap.py").unlink()
+    assert run("verify", cid) == 1
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "stale"
+
+
+def test_a_timeout_leaves_a_lead_alone(kb, monkeypatch):
+    """lead 没什么可失去的 —— 不确认就是不确认。"""
+    monkeypatch.setattr(c, "VERIFY_TIMEOUT", 2)
+    cid = seed_one(kb)
+    assert run("verify", cid, "--script", write_script(kb, "hang.py", HANG)) == 1
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "lead"
+
+
+def test_the_demotion_refreshes_the_digest(kb, monkeypatch):
+    monkeypatch.setattr(c, "VERIFY_TIMEOUT", 2)
+    cid = verified_snapshot_claim(kb)
+    run("verify", cid, "--script", write_script(kb, "hang.py", HANG))
+    assert "stale 1" in (kb / "digest" / "latest.md").read_text("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# kb show：审计链要对人可见，不能只有机器能复核
+# ---------------------------------------------------------------------------
+
+def test_show_prints_the_evidence_and_compares_it(kb, capsys):
+    cid = verified_snapshot_claim(kb)
+    capsys.readouterr()
+    run("show", cid)
+    out = capsys.readouterr().out
+    assert "## 证据" in out and "sources/s.txt" in out and "对得上" in out
+
+
+def test_show_flags_evidence_that_changed(kb, capsys):
+    cid = verified_snapshot_claim(kb)
+    snapshot(kb, "这里有关键短语在内。" + "换了内容。" * 40, name="s.txt")
+    capsys.readouterr()
+    run("show", cid)
+    assert "已改变" in capsys.readouterr().out
+
+
+def test_show_flags_evidence_that_vanished(kb, capsys):
+    cid = verified_snapshot_claim(kb)
+    (kb / "sources" / "s.txt").unlink()
+    capsys.readouterr()
+    run("show", cid)
+    assert "文件已不在" in capsys.readouterr().out
+
+
+def test_show_says_when_there_is_no_fingerprint(kb, capsys):
+    cid = seed_one(kb)
+    write_script(kb, f"{cid}.py", HOLDS)
+    run("verify", cid, "--script", f"verify/{cid}.py")
+    capsys.readouterr()
+    run("show", cid)
+    assert "没有快照指纹" in capsys.readouterr().out
+
+
+def test_show_on_a_lead_says_nothing_about_evidence(kb, capsys):
+    cid = seed_one(kb)
+    capsys.readouterr()
+    run("show", cid)
+    assert "证据" not in capsys.readouterr().out
