@@ -142,7 +142,7 @@ def check_verified_evidence(root: Path, conn: sqlite3.Connection) -> list[tuple[
     if not rows:
         return [(OK, "没有 verified 断言可查（这个库还没挣到东西）")]
 
-    out, bad = [], 0
+    out, bad, compared = [], 0, 0
     for r in rows:
         script = r["verify_script"]
         if not script or not (root / script).exists():
@@ -150,7 +150,9 @@ def check_verified_evidence(root: Path, conn: sqlite3.Connection) -> list[tuple[
                               "这条断言已经无法复核，却还是 verified"))
             bad += 1
             continue
-        for name, recorded in json.loads(r["evidence"] or "{}").items():
+        recorded_all = json.loads(r["evidence"] or "{}")
+        compared += len(recorded_all)
+        for name, recorded in recorded_all.items():
             path = root / "sources" / name
             if not path.exists():
                 out.append((FAIL, f"{r['id']}: 快照 sources/{name} 没了 —— "
@@ -161,8 +163,21 @@ def check_verified_evidence(root: Path, conn: sqlite3.Connection) -> list[tuple[
                                   "验的时候不是这份原文。重跑 kb verify；"
                                   "确认制度真的改了就 kb falsify"))
                 bad += 1
-    if not bad:
-        out.append((OK, f"{len(rows)} 条 verified 断言的脚本与证据都还对得上"))
+    if bad:
+        return out
+
+    # 说清楚**比对了什么**，而不是笼统说"都对得上"。
+    # 一条 verified 断言可能压根没有快照指纹可比（结构层的证据是实时数据；
+    # 或者它是在记录指纹这个特性之前验的、又从旧账本重建过）。
+    # 那种情况下这项检查是空的，措辞却听着像通过了 ——
+    # 那就成了"度量组件跑没跑，而不是度量它产出了有效结论"。
+    if compared:
+        out.append((OK, f"{len(rows)} 条 verified 断言：脚本都在，"
+                        f"{compared} 份快照指纹对得上"))
+    else:
+        out.append((WARN, f"{len(rows)} 条 verified 断言的脚本都在，但**没有一份快照指纹**"
+                          "可比对 —— 要么它们的证据是实时数据（结构层，正常），"
+                          "要么是在记录指纹之前验的。后者重跑一次 kb verify 就有了。"))
     return out
 
 

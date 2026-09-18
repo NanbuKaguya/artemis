@@ -829,6 +829,53 @@ def test_claims_without_snapshots_need_no_evidence(kb):
     assert run("doctor", "--offline") == 0
 
 
+def test_doctor_says_when_it_had_nothing_to_compare(kb, capsys):
+    """检查是空的时候，措辞不能听着像通过了。
+
+    "度量组件跑没跑，而不是度量它产出了有效结论" —— 这个库反复点名的反模式。
+    """
+    cid = seed_one(kb)
+    write_script(kb, f"{cid}.py", HOLDS)
+    run("verify", cid, "--script", f"verify/{cid}.py")
+    run("doctor", "--offline")
+    out = capsys.readouterr().out
+    assert "没有一份快照指纹" in out
+    assert "都还对得上" not in out
+
+
+def test_doctor_reports_how_many_fingerprints_it_compared(kb, capsys):
+    cid, script = snap_claim(kb, "这里有关键短语在内。" + LONG)
+    run("verify", cid, "--script", script)
+    run("doctor", "--offline")
+    assert "1 份快照指纹对得上" in capsys.readouterr().out
+
+
+def test_rebuilding_from_a_pre_evidence_ledger_is_not_silently_reassuring(kb, capsys):
+    """旧账本没有 evidence 字段，重建后 verified 会失去指纹。
+
+    那时快照被换掉 doctor 也发现不了 —— 发现不了可以接受（无从比对），
+    但不能说"都对得上"。
+    """
+    cid, script = snap_claim(kb, "这里有关键短语在内。" + LONG)
+    run("verify", cid, "--script", script)
+
+    path = ledger.events_path(kb)
+    rows = [json.loads(ln) for ln in path.read_text("utf-8").splitlines() if ln.strip()]
+    for e in rows:
+        if e.get("row"):
+            e["row"].pop("evidence", None)
+    path.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows),
+                    encoding="utf-8")
+    run("rebuild", "--force")
+
+    snapshot(kb, "这里有关键短语在内。" + "换了内容。" * 40, name="s.txt")
+    capsys.readouterr()
+    run("doctor", "--offline")
+    out = capsys.readouterr().out
+    assert "没有一份快照指纹" in out
+    assert "都还对得上" not in out
+
+
 # --- B：一行坏账本记录不能毁掉整个重建 -----------------------------------
 
 TAMPERED = {
