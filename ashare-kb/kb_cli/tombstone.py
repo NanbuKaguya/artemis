@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as _dt
 from pathlib import Path
 
+from .digest import inline
+
 TEMPLATE = """# FALSIFIED: {id}
 
     {statement}
@@ -42,6 +44,16 @@ TEMPLATE = """# FALSIFIED: {id}
 """
 
 
+def _cell(value: object) -> str:
+    """墓碑的表格单元格。
+
+    先压成单行（换行会把表格拆散），再转义竖线 —— 正文里的 `|`
+    会把内容挤到别的列去，来源等级看起来就成了另一个字段的值，
+    而这份文件存在的意义正是让人事后复核"我当初凭什么相信它"。
+    """
+    return inline(value).replace("|", "\\|")
+
+
 def write(root: Path, row: dict, why: str, evidence: str = "") -> Path:
     path = root / "ledger" / "falsified" / f"{row['id']}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,7 +61,7 @@ def write(root: Path, row: dict, why: str, evidence: str = "") -> Path:
         falsified_at=_dt.date.today().isoformat(),
         why=why.strip() or "(未填写)",
         evidence=(evidence.strip() or "(无)"),
-        **{k: ("—" if row.get(k) in (None, "") else row.get(k)) for k in
+        **{k: ("—" if row.get(k) in (None, "") else _cell(row.get(k))) for k in
            ("id", "statement", "layer", "source_tier", "source_ref",
             "if_wrong", "created_at", "last_verified", "verify_script")},
     )

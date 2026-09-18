@@ -16,8 +16,13 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS claim (
   id            TEXT PRIMARY KEY,
 
-  -- 一句话，必须可证伪
-  statement     TEXT NOT NULL CHECK(length(trim(statement, ' ' || char(9) || char(10) || char(13))) > 0),
+  -- 一句话，必须可证伪。
+  -- 不许带换行：这是把"一句话"从注释变成约束。一条断言的正文里若能塞进
+  -- 换行，它就能在 digest 里伪造出整节"已验证断言" —— 而 digest 是下一个
+  -- 会话唯一会读的东西。渲染那一步也会压成单行，这里是第二道。
+  statement     TEXT NOT NULL
+                CHECK(length(trim(statement, ' ' || char(9) || char(10) || char(13))) > 0)
+                CHECK(instr(statement, char(10)) = 0 AND instr(statement, char(13)) = 0),
 
   -- 只有两层。state 层被 CHECK 挡在库外。
   layer         TEXT NOT NULL CHECK(layer IN ('institutional','structural')),

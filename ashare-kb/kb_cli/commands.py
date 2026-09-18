@@ -195,6 +195,12 @@ def _explain_integrity(exc: Exception) -> str:
     msg = str(exc)
     if "L4/L5" in msg:
         return f"质量门拦截: {msg}"
+    if "instr(statement" in msg:
+        return ("断言正文里不能有换行 —— 断言是一句话。\n"
+                "  这不是格式洁癖：带换行的正文能在 digest 里伪造出整节"
+                "「已验证断言」，\n"
+                "  而 digest 是下一个会话唯一会读的东西。\n"
+                "  长的背景信息放 --note，或者拆成两条断言。")
     if "status <> 'verified'" in msg or "CHECK constraint" in msg:
         return (f"约束拦截: {msg}\n"
                 "  verified 必须同时有 last_verified 和 verify_script；"
