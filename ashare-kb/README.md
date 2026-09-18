@@ -49,6 +49,12 @@ python3 seed.py    # 灌入种子断言（仅首次；全部为 lead）
 ./kb digest        # 生成 digest/latest.md
 ```
 
+`kb` 本身零依赖，纯标准库。只有结构层的验证脚本需要 akshare：
+
+```bash
+pip install -r requirements.txt     # Debian 系统 Python 上会挂，用干净 venv
+```
+
 ## 核心循环
 
 ```bash
@@ -87,7 +93,16 @@ python3 seed.py    # 灌入种子断言（仅首次；全部为 lead）
 Python 未捕获异常的退出码就是 1，会被读成"断言被数据打脸"，
 库会自动写一块墓碑、记下一条根本不存在的教训。详见 `verify/README.md`。
 
-**3. falsified 不删除。** 保留在库里（`status='falsified'`），
+**3. 数据源是 akshare，口径写在代码里。** 没有 Wind/Choice，结构层靠
+`verify/ashare_data.py` 从公开接口自算。口径（前复权、以区间前收盘为基准、
+剔除区间内新上市、含 ST）钉在那个模块的文档字符串里，**改口径就是改断言**，
+两边必须一起改。取数和算数是分开的：算数是纯函数，没网也能测；
+取数失败一律 inconclusive，绝不降级成"算出来了"。
+
+全A逐只历史是 5000+ 次请求，第一次跑要一到两小时，逐只缓存在 `.cache/` 下，
+中断可续，第二次是秒级。
+
+**4. falsified 不删除。** 保留在库里（`status='falsified'`），
 同时在 `ledger/falsified/<id>.md` 留一份人读的墓碑。
 断言错了不是教训，**"我当初凭什么相信它"才是** —— 墓碑里那一节要手写。
 
@@ -114,6 +129,8 @@ ashare-kb/
 │   └── falsified/      # 墓碑，一条一个文件
 ├── sources/            # L1/L3 原文快照 —— 证据是快照不是链接
 ├── verify/             # 验证脚本，一条断言一个
+│   ├── kbverify.py     #   退出码契约 + L1 快照核对
+│   └── ashare_data.py  #   akshare 数据层：取数与算数分开
 ├── digest/             # 每次会话的 prime 材料
 └── tests/
 ```
@@ -143,7 +160,9 @@ valid output。这个库唯一有意义的指标是 **verified 条目数**，不
 pytest tests/ -q
 ```
 
-49 个用例，重点全在质量门上：L4/L5 能不能从 INSERT 绕、能不能从 UPDATE 绕、
+73 个用例。质量门那部分：L4/L5 能不能从 INSERT 绕、能不能从 UPDATE 绕、
 能不能先挣到 verified 再把 tier 改高、空白字符串能不能冒充"有值"、
-崩溃的验证脚本会不会误写墓碑、第 90 天会不会被提前判成过期。
+崩溃的验证脚本会不会误写墓碑、快照里短语找不到会不会被误判成断言被推翻、
+第 90 天会不会被提前判成过期。数据层那部分：季度边界、区间涨跌幅的基准、
+新上市和停牌股的剔除、akshare 缺失时的降级路径。
 门漏了，这个库就只是个笔记堆，而且是一个看起来很权威的笔记堆 —— 比没有更糟。

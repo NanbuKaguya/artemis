@@ -67,13 +67,28 @@ def snapshot_text(name: str) -> str:
 
 
 def require_phrases(name: str, *phrases: str) -> None:
-    """断言快照里出现了全部关键短语。任何一条缺失 = 断言被打脸。
+    """断言快照里出现了全部关键短语。
 
     这是 L1 断言的标准验证形态：不是"我读过原文"，
     而是"原文里确实有这几个字，现在、在这台机器上、可复核"。
+
+    **短语找不到时退「不确定」，不退「被打脸」。** 这不是保守 ——
+    是分清两件事。短语匹配不上，绝大多数时候是口径问题而不是事实问题：
+    原文可能写"二〇二四年四月十二日"而不是"2024年4月12日"，
+    PDF 转文本可能把数字拆开，页面可能只是换了个说法。
+    判成 falsified 的话，库会自动写一块记录着不存在的教训的墓碑 ——
+    正是本模块开头警告的那个失败模式，只不过换了个入口。
+
+    制度层断言的 falsify 该由人来做：读到修订后的法规，手动 kb falsify。
+    脚本对 L1 的职责是"确认快照仍然支持这条断言"，
+    它说"没找到"的意思是"去看一眼"，不是"它是假的"。
     """
     text = snapshot_text(name)
     missing = [p for p in phrases if p not in text]
     if missing:
-        falsified(f"sources/{name} 中找不到: " + " / ".join(missing))
+        inconclusive(
+            f"sources/{name} 中找不到: " + " / ".join(missing)
+            + "\n  先核对短语写法与原文是否一致（日期格式、全角半角、转文本时的换行拆字）。"
+            + "\n  确认原文确实不再支持这条断言了，再手动 kb falsify。"
+        )
     holds(f"sources/{name} 包含全部 {len(phrases)} 条关键短语")

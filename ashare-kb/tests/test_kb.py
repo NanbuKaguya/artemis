@@ -283,6 +283,63 @@ def test_script_outside_verify_is_refused(kb):
 
 
 # ---------------------------------------------------------------------------
+# kbverify：L1 快照核对
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_SCRIPT = (
+    "import kbverify as kv\n"
+    "kv.require_phrases('yuanwen.txt', '2024年4月12日', '1+N')\n"
+)
+
+
+def install_kbverify(root):
+    """验证脚本靠 PYTHONPATH 上的 verify/ 拿到 kbverify。"""
+    (root / "verify").mkdir(parents=True, exist_ok=True)
+    (root / "verify" / "kbverify.py").write_text(
+        (ROOT / "verify" / "kbverify.py").read_text("utf-8"), encoding="utf-8")
+
+
+def snapshot(root, text):
+    (root / "sources").mkdir(parents=True, exist_ok=True)
+    (root / "sources" / "yuanwen.txt").write_text(text, encoding="utf-8")
+
+
+def setup_snapshot_claim(kb, text=None):
+    install_kbverify(kb)
+    if text is not None:
+        snapshot(kb, text)
+    cid = seed_one(kb, tier=1, layer="institutional")
+    return cid, write_script(kb, f"{cid}.py", SNAPSHOT_SCRIPT)
+
+
+def test_snapshot_with_all_phrases_verifies(kb):
+    cid, script = setup_snapshot_claim(kb, "……2024年4月12日国务院印发……形成1+N政策体系……")
+    assert run("verify", cid, "--script", script) == 0
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "verified"
+
+
+def test_missing_phrase_is_inconclusive_never_falsified(kb):
+    """短语匹配不上几乎总是口径问题，不是事实问题。
+
+    原文可能写"二〇二四年四月十二日"、PDF 转文本可能把数字拆开。
+    判成 falsified 的话，库会自动写一块记录着不存在的教训的墓碑。
+    """
+    cid, script = setup_snapshot_claim(kb, "……二〇二四年四月十二日国务院印发……1+N……")
+    assert run("verify", cid, "--script", script) == 2
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "lead"
+    assert not (kb / "ledger" / "falsified" / f"{cid}.md").exists()
+
+
+def test_missing_snapshot_is_inconclusive(kb):
+    cid, script = setup_snapshot_claim(kb)  # 不建快照
+    assert run("verify", cid, "--script", script) == 2
+    assert conn_of(kb).execute(
+        "SELECT status FROM claim WHERE id=?", (cid,)).fetchone()[0] == "lead"
+
+
+# ---------------------------------------------------------------------------
 # source：回溯
 # ---------------------------------------------------------------------------
 
