@@ -122,14 +122,19 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         rc = args.func(args)
-        if ledger.consume_dirty():
-            _refresh_digest(args)
-        return rc
     except KBError as exc:
         print(f"错误: {exc}", file=sys.stderr)
-        return 1
+        rc = 1
     except KeyboardInterrupt:
         return 130
+
+    # 刷新放在 try 外面：命令可以**先改了状态再报错**（比如验证脚本超时，
+    # 断言降级为 stale 之后才抛出"没能确认"）。放在 try 里的话这种情况
+    # 会跳过刷新，digest 就停在旧状态 —— 正是这个刷新机制当初要防的那件事，
+    # 只是换了条路径。
+    if ledger.consume_dirty():
+        _refresh_digest(args)
+    return rc
 
 
 if __name__ == "__main__":

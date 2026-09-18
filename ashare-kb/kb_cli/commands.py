@@ -262,6 +262,27 @@ def _update(conn: sqlite3.Connection, row: dict) -> None:
 # verify
 # --------------------------------------------------------------------------
 
+def _cannot_confirm(root: Path, conn: sqlite3.Connection, row: dict,
+                    reason: str) -> KBError:
+    """「今天没能确认这条断言」的统一出口。
+
+    一条**已经是 verified** 的断言，无论因为什么没能重新确认 —— 脚本超时、
+    脚本文件不见了、权限不足 —— 都不能留在 verified：库会继续声称一件
+    当前无法确认的事。
+
+    这个洞早先修过一次（退出码 2 的那条路），但 cmd_verify 里每一个
+    raise KBError 都绕过了那段逻辑 —— 同一个缺陷，换了一扇门进来。
+    所以把门收成一个。
+    """
+    if row["status"] == "verified":
+        row["status"] = "stale"
+        _update(conn, row)
+        ledger.append(root, "stale", row["id"], row, reason=reason)
+        reason += (f"\n  {row['id']}: verified -> stale。没能确认的断言不能留在 "
+                   "verified —— 查清楚再 kb verify。")
+    return KBError(reason)
+
+
 def cmd_verify(args) -> int:
     root = kb_root(args.root)
     conn = connect(root)
@@ -278,15 +299,14 @@ def cmd_verify(args) -> int:
 
     script = row["verify_script"]
     if not script:
-        raise KBError(
+        raise _cannot_confirm(root, conn, row,
             f"{row['id']} 没有验证脚本。\n"
             "  verified 只能由脚本挣到 —— 人工「我读过了」是这套系统唯一的后门，已焊死。\n"
             f"  写一个 verify/{row['id']}.py（看 verify/README.md 里的契约），然后:\n"
-            f"    kb verify {row['id']} --script verify/{row['id']}.py"
-        )
+            f"    kb verify {row['id']} --script verify/{row['id']}.py")
     path = root / script
     if not path.exists():
-        raise KBError(f"验证脚本不存在: {path}")
+        raise _cannot_confirm(root, conn, row, f"验证脚本不存在: {path}")
 
     if row["source_tier"] >= 4:
         raise KBError(
@@ -302,9 +322,12 @@ def cmd_verify(args) -> int:
             env=_verify_env(root, row["id"]),
         )
     except subprocess.TimeoutExpired:
-        raise KBError(f"验证脚本超时（{VERIFY_TIMEOUT}s），状态不变。") from None
+        raise _cannot_confirm(
+            root, conn, row, f"验证脚本超时（{VERIFY_TIMEOUT}s）。") from None
     except PermissionError:
-        raise KBError(f"验证脚本不可执行: {path}（chmod +x，或写成 .py）") from None
+        raise _cannot_confirm(
+            root, conn, row,
+            f"验证脚本不可执行: {path}（chmod +x，或写成 .py）") from None
 
     evidence = (proc.stdout + proc.stderr).strip()
     if evidence:
@@ -512,6 +535,7 @@ def cmd_show(args) -> int:
                        ("衰减阈值(天)", "stale_after_days")):
         print(f"{label:<14}{r[key] if r[key] is not None else '—'}")
     print(f"{'来源分级':<12}L{r['source_tier']}  {TIER_NAMES[r['source_tier']]}")
+    _print_evidence(root, r)
     hist = ledger.history(root, r["id"])
     if hist:
         print("\n## 账本")
@@ -519,6 +543,30 @@ def cmd_show(args) -> int:
             extra = e.get("why") or e.get("note") or ""
             print(f"  {e['ts'][:10]}  {e['action']:<8} {extra}")
     return 0
+
+
+def _print_evidence(root: Path, r: sqlite3.Row) -> None:
+    """把"这条断言是对着哪份证据验的"直接亮出来，并当场比对。
+
+    指纹存在库里、doctor 会自动比对，但人打开一条断言时看不见它 ——
+    审计链在库里而对人不可见，等于只有机器能复核。
+    """
+    import hashlib
+    recorded = json.loads(r["evidence"] or "{}") if "evidence" in r.keys() else {}
+    if not recorded:
+        if r["status"] == "verified":
+            print(f"{'证据':<14}—（没有快照指纹；结构层的证据是实时数据）")
+        return
+    print("\n## 证据（验证时读到的快照）")
+    for name, digest in sorted(recorded.items()):
+        path = root / "sources" / name
+        if not path.exists():
+            state = "文件已不在"
+        elif hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+            state = "对得上"
+        else:
+            state = "已改变 —— 重跑 kb verify"
+        print(f"  sources/{name}  {digest[:16]}…  {state}")
 
 
 def cmd_digest(args) -> int:
