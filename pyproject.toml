@@ -18,18 +18,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 因子挖掘与反过拟合验证（结局 C 下不启用）
-research = ["scipy>=1.10"]
-# 真实行情数据源
-data = ["akshare>=1.12.0"]
-
-[project.optional-dependencies]
 # 真实数据源。不进主依赖，因为 Lite 之外的用法才需要
 data = ["akshare>=1.12.0"]
+# 因子挖掘与反过拟合验证。只有 alpha.mining / validate.antifit 用 scipy，
+# 两个在日常路径上永不加载的模块
+research = ["scipy>=1.10"]
 # AI 研究助手
 ai = ["anthropic>=0.40.0"]
 dev = ["pytest>=7.0"]
-all = ["akshare>=1.12.0", "anthropic>=0.40.0", "pytest>=7.0"]
+all = ["akshare>=1.12.0", "scipy>=1.10", "anthropic>=0.40.0", "pytest>=7.0"]
 
 [project.scripts]
 # 人用的入口

@@ -431,3 +431,52 @@ def test_ex_dividend_limit_up_is_not_missed():
                      prev_close=10.0, last_amount=5e8, reported_pct=10.0)
     mines = {m.rule: m for m in check_one(row, GuardConfig(), st, mkt)}
     assert mines["昨日涨停（今日易高开）"].hit, "除息日涨停必须被拦下"
+
+
+# --------------------------------------------------------------------------
+# 12. 打包配置本身也要能解析
+# --------------------------------------------------------------------------
+def test_pyproject_parses_and_keeps_daily_path_light():
+    """pyproject.toml 坏掉时 pytest 只在收集阶段报 ERROR，很容易被漏掉。
+
+    这条测试真的发生过：一次编辑写出了两个 [project.optional-dependencies]，
+    整个测试套件报 ERROR，而我把它当成普通输出，照样提交推送了。
+    让配置错误以"测试失败"的形式出现，而不是一行容易滑过去的 ERROR。
+    """
+    import tomllib
+
+    cfg = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    deps = cfg["project"]["dependencies"]
+    joined = " ".join(deps)
+    assert "scipy" not in joined, (
+        "scipy 只被 alpha.mining / validate.antifit 用到，两个在日常路径上"
+        "永不加载的模块 —— 不该让只跑 watch/log/review 的人为它付安装成本")
+    assert "scipy" in str(cfg["project"]["optional-dependencies"]), \
+        "但要留在 optional 里，想跑因子挖掘时装得上"
+
+
+def test_daily_path_does_not_import_scipy():
+    """运行时断言：watch / log / review / audit 全路径不碰 scipy。
+
+    只在 pyproject 里把它挪走不够 —— 哪天有人在 lite 里 import scipy，
+    依赖清单就悄悄错了。
+    """
+    import builtins
+    import subprocess
+    import sys
+
+    code = (
+        "import builtins\n"
+        "real = builtins.__import__\n"
+        "def guard(name, *a, **k):\n"
+        "    if name.split('.')[0] == 'scipy':\n"
+        "        raise AssertionError('日常路径不该 import scipy: ' + name)\n"
+        "    return real(name, *a, **k)\n"
+        "builtins.__import__ = guard\n"
+        "import artemis.lite, artemis.guard.rules, artemis.data.preflight\n"
+        "import artemis.doctor, artemis.review.journal, artemis.calendar\n"
+        "print('ok')\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, cwd=ROOT)
+    assert r.returncode == 0, r.stderr[-400:]
