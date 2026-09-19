@@ -77,12 +77,17 @@ cd ashare-kb && ./kb list | tail -2      # verified: 0 -> 闸是关着的
 > **连续三次改动 `ashare-kb/` 下的代码而 `verified` 没有增加，闸就关上了。**
 
 ```bash
-git log --oneline -20 -- ashare-kb/kb_cli ashare-kb/verify ashare-kb/schema.sql
+# 按扩展名过滤，不要按目录 —— verify/ 和 kb_cli/ 里也有 .md
+git log --oneline -20 -- 'ashare-kb/**/*.py' 'ashare-kb/*.sql' 'ashare-kb/kb'
 cd ashare-kb && ./kb list | tail -2
 ```
 
 三这个数字是随意定的。随意但可核查，比"注意不要过度建造"这种
 无法执行的说法强。
+
+按目录过滤会把 `verify/README.md` 这种纯文档算成改代码 —— **一个会误报的
+检查会训练你无视它**，那条判据也就废了。这和 `kb stale` 误报会毁掉淘汰机制
+是同一件事。
 
 ### ⛔ 门检查的是形式，substance 由你提供 —— 这一类洞全在模型这一侧
 
