@@ -480,3 +480,43 @@ def test_daily_path_does_not_import_scipy():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True,
                        text=True, cwd=ROOT)
     assert r.returncode == 0, r.stderr[-400:]
+
+
+# --------------------------------------------------------------------------
+# 13. 最后一公里：凭证要跟到人眼前
+# --------------------------------------------------------------------------
+def test_brief_surfaces_unchecked_rules():
+    """简报是结论真正送到人眼前的地方。
+
+    错的时候会怎样：前面每一层都老实标了"未检"，到了简报这一层
+    只渲染结论不渲染凭证 —— 你每天早上读到的还是一排干净的 ✓，
+    前面所有诚实标注都白做了。
+    """
+    from artemis.brief import Brief, render_text
+
+    b = Brief(kind="premarket", generated_at="2026-09-11T08:40:00")
+    b.facts["screen"] = {
+        "checked": 1,
+        "detail": [{"代码": "600519", "名称": "贵州茅台", "结论": "✓ 通过",
+                    "踩雷": "—", "提示": "—"}],
+        "unchecked_rules": ["停牌", "昨日涨停", "流动性", "昨日成交清淡", "换手过热"],
+        "history_failed": 0,
+        "caveat": "未取历史，以上结论只覆盖名称/市值/股价三项",
+    }
+    text = render_text(b)
+    assert "未检查" in text and "停牌" in text
+
+
+def test_brief_surfaces_partial_history_failure():
+    """部分失败也要说 —— 30 只里 8 只没查，和全查了完全不是一回事。"""
+    from artemis.brief import Brief, render_text
+
+    b = Brief(kind="premarket", generated_at="2026-09-11T08:40:00")
+    b.facts["screen"] = {
+        "checked": 30,
+        "detail": [{"代码": "600519", "名称": "贵州茅台", "结论": "✓ 通过",
+                    "踩雷": "—", "提示": "—"}],
+        "unchecked_rules": [], "history_failed": 8,
+        "caveat": "8 只未取到历史，其流量类规则标为未检",
+    }
+    assert "8 只没取到历史" in render_text(b)

@@ -142,6 +142,16 @@ def render_text(b: Brief) -> str:
         if sc.get("not_found"):
             L.append(f"  未找到（可能已退市或代码有误）: {sc['not_found']}")
         L.append("  注：'✓ 通过'只代表没踩这几类雷，不代表推荐买入。")
+        # 数据凭证必须跟到最后一公里。简报是这些结论真正送到人眼前的地方，
+        # 在这里丢掉"哪几条没查"，等于前面所有诚实标注都白做了。
+        if sc.get("unchecked_rules"):
+            L.append(f"  ⚠ 本次未检查：{'、'.join(sc['unchecked_rules'])}"
+                     f" —— 上面的 ✓ 只说明名称/市值/股价没问题")
+        if sc.get("history_failed"):
+            L.append(f"  ⚠ {sc['history_failed']} 只没取到历史，"
+                     f"它们的停牌/涨停/流动性/换手未检查")
+        elif sc.get("caveat"):
+            L.append(f"  ⚠ {sc['caveat']}")
 
     d = b.facts.get("discipline")
     if d and d.get("n_records"):

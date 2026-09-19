@@ -81,6 +81,10 @@ make_plist() {
 }
 
 printf "${BOLD}安装定时任务${RST}\n"
+# 收盘账本必须最先装，也必须先跑：盘前排雷的"昨日真相"全部从它读。
+# 没有它，watch 每天都要逐只联网拉历史 —— 慢、会被限频，而且
+# 涨跌幅要自己算（除息日会错）。15:20 给收盘数据留 20 分钟落定。
+make_plist com.artemis.snapshot   15 20 weekly "$VPY" -m artemis.lite snapshot
 make_plist com.artemis.premarket  8 40 weekly  "$VPY" -m artemis.brief premarket
 make_plist com.artemis.postmarket 15 30 weekly "$VPY" -m artemis.brief postmarket
 make_plist com.artemis.calendar    3  0 monthly "$VPY" -m artemis.service calendar-refresh
@@ -90,9 +94,14 @@ cat <<TIP
 ${BOLD}────────────────────────────────────────────────${RST}
 装好了。说明：
 
+  收盘账本  工作日 15:20   ← 地基。盘前排雷的昨日真相从这里来
   盘前简报  工作日 08:40   （早于 09:15 集合竞价）
   盘后复盘  工作日 15:30
   日历刷新  每月 1 号 03:00
+
+  ${BOLD}账本要攒满 20 个交易日（约一个月）${RST}才够算 20 日均额。
+  在那之前 watch 会自动回退到逐只联网拉取 —— 慢但结论一样正确，
+  每次运行打印的"数据凭证"会告诉你现在走的是哪条路。
 
   日志:     $LOGDIR/
   查看已装: launchctl list | grep artemis

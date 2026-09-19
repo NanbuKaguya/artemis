@@ -13,6 +13,7 @@
 
 用法：
     python -m artemis.lite doctor                  # 第一件事：体检，告诉你卡在哪
+    python -m artemis.lite snapshot               # 收盘后跑：存当日全市场账本（一次请求）
     python -m artemis.lite check 600519 000001 300750
     python -m artemis.lite watch                  # 检查 watchlist.txt 里的自选股
     python -m artemis.lite log                    # 记一笔交易的事前承诺
