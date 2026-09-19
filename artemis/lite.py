@@ -122,6 +122,7 @@ class RecentStats:
     prev_close: float = float("nan")
     last_amount: float = float("nan")
     reported_pct: float = float("nan")   # 数据源直接给的昨日涨跌幅（%），优先于自算
+    last_turnover: float = float("nan")  # 数据源直接给的昨日换手率（%）
 
     @property
     def last_pct(self) -> float:
@@ -138,6 +139,156 @@ class RecentStats:
         if not (self.prev_close and self.prev_close > 0):
             return float("nan")
         return (self.last_close / self.prev_close - 1) * 100
+
+
+# --------------------------------------------------------------------------
+# 收盘账本：每个交易日收盘后存一份全市场快照
+# --------------------------------------------------------------------------
+def snapshot_dir() -> Path:
+    return data_dir() / "snapshots"
+
+
+def save_snapshot(snap: "pd.DataFrame", day: "date | None" = None) -> Path:
+    """把一份全市场快照按交易日存盘。
+
+    为什么值得占这点磁盘（每天约 300KB）：
+    它让每一天的判断可以被重建。"系统当时为什么说这只票通过了" ——
+    答案是一个文件，不是一段需要重新联网才能复现的推理。
+    对"数据必须正确"这个要求来说，可重建比可验证更实在：
+    我没法保证数据源不出错，但能保证你总能查出当时拿到的是什么。
+    """
+    d = day or today_cn()
+    out = snapshot_dir() / f"{d.isoformat()}.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    snap.to_parquet(out, index=False)
+    return out
+
+
+def list_snapshots() -> list[tuple["date", Path]]:
+    """按日期升序列出账本里已有的快照。"""
+    from datetime import date as _date
+
+    days = []
+    for p in sorted(snapshot_dir().glob("*.parquet")):
+        try:
+            days.append((_date.fromisoformat(p.stem), p))
+        except ValueError:
+            continue
+    return days
+
+
+def load_snapshot(day: "date") -> "pd.DataFrame | None":
+    p = snapshot_dir() / f"{day.isoformat()}.parquet"
+    if not p.exists():
+        return None
+    try:
+        return pd.read_parquet(p)
+    except Exception:  # noqa: BLE001 - 单个文件坏了不该让整条路径挂掉
+        return None
+
+
+@dataclass
+class LedgerCoverage:
+    """账本能支撑什么结论 —— 这张卡片要打给用户看，不是内部状态。"""
+
+    days: int = 0                       # 账本里有几个交易日
+    last_day: "date | None" = None      # 最后一天
+    stale_days: int = 0                 # 最后一天距市场最后交易日差几天
+    n_codes: int = 0
+
+    @property
+    def can_judge_flow(self) -> bool:
+        """够不够判停牌/涨停/昨日成交额 —— 只要有昨天那一份就够。"""
+        return self.days >= 1 and self.stale_days == 0
+
+    @property
+    def adv_days(self) -> int:
+        return min(self.days, 20)
+
+
+def stats_from_ledger(
+    codes: list[str], market_last: "pd.Timestamp | None" = None,
+) -> tuple[dict[str, RecentStats], LedgerCoverage]:
+    """从收盘账本推出每只票的昨日真实状态。**零网络请求。**
+
+    这是对上一版的纠正。上一版为了拿"昨日真实值"，改成了每只票拉一次
+    日线 —— 30 只自选股就是 30 次请求、20 秒、外加限频风险，而且
+    涨跌幅还要自己用收盘价相除（除息日会算错）。
+
+    但全市场快照本来就是**一次请求拿 5400 只**，而且带的是交易所口径的
+    涨跌幅、成交额、换手率。问题从来不在"快照"，而在"哪一天的快照"：
+    开盘前的当日快照是空的，昨天收盘的快照才是昨日真相。
+
+    于是：收盘后存一次，开盘前读文件。请求数 30 -> 0，
+    口径从"自己算"变成"源头给"，而且决策输入留在磁盘上可复查。
+    """
+    snaps = list_snapshots()[-60:]
+    cov = LedgerCoverage(days=len(snaps))
+    if not snaps:
+        return {}, cov
+
+    cov.last_day = snaps[-1][0]
+    if market_last is not None:
+        cov.stale_days = max(0, (market_last.date() - cov.last_day).days)
+
+    frames = []
+    for d, _ in snaps:
+        s = load_snapshot(d)
+        if s is None or "code" not in s:
+            continue
+        s = s.copy()
+        s["code"] = s["code"].astype(str).str.zfill(6)
+        s["_day"] = pd.Timestamp(d)
+        frames.append(s)
+    if not frames:
+        return {}, cov
+
+    hist = pd.concat(frames, ignore_index=True)
+    hist = hist[hist["code"].isin(set(codes))]
+    cov.n_codes = int(hist["code"].nunique())
+
+    last_day = max(f["_day"].iloc[0] for f in frames)
+    out: dict[str, RecentStats] = {}
+    for c, g in hist.groupby("code", sort=False):
+        g = g.sort_values("_day")
+        row = g.iloc[-1]
+        amts = pd.to_numeric(g["amount"], errors="coerce").dropna() \
+            if "amount" in g else pd.Series(dtype=float)
+        out[str(c)] = RecentStats(
+            adv20=float(amts.tail(20).mean()) if len(amts) else float("nan"),
+            # 这只票在账本里最后出现的那天。它早于市场最后交易日 => 停牌。
+            last_date=pd.Timestamp(row["_day"]),
+            last_close=float(row.get("price", np.nan)),
+            prev_close=float("nan"),          # 用不上：涨跌幅直接取源头那一列
+            last_amount=float(row.get("amount", np.nan)),
+            reported_pct=float(row.get("pct_chg", np.nan)),
+            last_turnover=float(row.get("turnover_rate", np.nan)),
+        )
+
+    return out, cov
+
+
+def cmd_snapshot(args: list[str] | None = None) -> None:
+    """收盘后跑：拉一次全市场快照存进账本。一天一次，一次一个请求。"""
+    from .calendar import TradingCalendar
+
+    cal = TradingCalendar()
+    trading, basis = cal.is_trading_day()
+    day = today_cn()
+    if not trading and "--force" not in (args or []):
+        print(f"{day} 不是交易日（{basis}），不存账本。"
+              f"确实要存就加 --force。")
+        return
+
+    snap = fetch_snapshot()
+    p = save_snapshot(snap, day)
+    n_zero = int((pd.to_numeric(snap.get("amount"), errors="coerce") == 0).sum()) \
+        if "amount" in snap else 0
+    print(f"已存 {p}")
+    print(f"  {len(snap)} 只，其中零成交（停牌/无交易）{n_zero} 只")
+    cov = LedgerCoverage(days=len(list_snapshots()))
+    print(f"  账本累计 {cov.days} 个交易日"
+          f"{'（满 20 天后流动性判断才完整）' if cov.days < 20 else ''}")
 
 
 def fetch_recent_stats(codes: list[str], sleep: float = 0.2,
@@ -272,16 +423,25 @@ def check_one(row: pd.Series, cfg: GuardConfig,
             out.append(Landmine(rule, False, "未取历史数据，本条未检", "warn"))
         return out
 
-    # 停牌：个股最后有数据的交易日早于市场最后交易日
-    if stats.last_date is not None and market_last is not None:
-        gap = (market_last - stats.last_date).days
-        susp = gap > 0
+    # 停牌有两种长相，取决于数据从哪来，两条都要查：
+    #   逐只日线 —— 停牌日干脆没有行，表现为"最后交易日早于市场最后交易日"
+    #   收盘账本 —— 停牌股照样出现在全市场快照里，只是成交额为 0
+    # 写成 if/elif 就会漏掉后者：账本路径下 last_date 永远是已知的，
+    # 于是零成交那条分支永远进不去，停牌股一路"✓ 通过"。
+    stale = (stats.last_date is not None and market_last is not None
+             and (market_last - stats.last_date).days > 0)
+    zero_amt = bool(pd.notna(stats.last_amount) and stats.last_amount <= 0)
+
+    if stale:
         out.append(Landmine(
-            "停牌", susp,
-            f"最后交易日 {stats.last_date.date()}，市场为 {market_last.date()}"
-            if susp else f"最后交易日 {stats.last_date.date()}", "block"))
-    elif pd.notna(stats.last_amount) and stats.last_amount <= 0:
-        out.append(Landmine("停牌", True, "最近交易日零成交", "block"))
+            "停牌", True,
+            f"最后交易日 {stats.last_date.date()}，市场为 {market_last.date()}",
+            "block"))
+    elif zero_amt:
+        out.append(Landmine("停牌", True, "最近交易日零成交额", "block"))
+    elif stats.last_date is not None:
+        out.append(Landmine("停牌", False,
+                            f"最后交易日 {stats.last_date.date()}", "block"))
     else:
         out.append(Landmine("停牌", False, "无交易日历，无法判定", "warn"))
 
@@ -308,15 +468,38 @@ def check_one(row: pd.Series, cfg: GuardConfig,
         "昨日成交清淡", thin,
         f"昨日成交额 {amt/1e8:.3f} 亿" if pd.notna(amt) else "成交额缺失", "warn"))
 
-    # 换手率由昨日成交额 / 流通市值算出，不用快照的日内值
-    fmv = row.get("float_mv", np.nan)
-    if pd.notna(amt) and pd.notna(fmv) and fmv > 0:
-        tr = amt / fmv * 100
-        out.append(Landmine("换手过热", tr > 25.0, f"昨日换手率 {tr:.1f}%", "warn"))
+    # 换手率优先用数据源给的那一列（收盘账本里就有），
+    # 自己用 成交额/流通市值 算只是退路 —— 两者口径未必一致：
+    # 交易所的换手率分母是流通股本，而流通市值还含了价格，
+    # 自算值在价格大幅变动时会偏。
+    tr = stats.last_turnover
+    if not np.isfinite(tr):
+        fmv = row.get("float_mv", np.nan)
+        tr = amt / fmv * 100 if (pd.notna(amt) and pd.notna(fmv) and fmv > 0) else np.nan
+    if pd.notna(tr):
+        out.append(Landmine("换手过热", bool(tr > 25.0), f"昨日换手率 {tr:.1f}%", "warn"))
     else:
-        out.append(Landmine("换手过热", False, "流通市值缺失，本条未检", "warn"))
+        out.append(Landmine("换手过热", False, "换手率缺失，本条未检", "warn"))
 
     return out
+
+
+def _assemble(sub, cfg, stats, market_last, missing) -> "pd.DataFrame":
+    rows = []
+    for _, r in sub.iterrows():
+        mines = check_one(r, cfg, stats.get(r["code"]), market_last)
+        blocked = [m for m in mines if m.hit and m.severity == "block"]
+        warned = [m for m in mines if m.hit and m.severity == "warn"]
+        rows.append({
+            "代码": r["code"], "名称": r.get("name", ""),
+            "结论": "❌ 排除" if blocked else ("⚠ 注意" if warned else "✓ 通过"),
+            "踩雷": "；".join(f"{m.rule}({m.detail})" for m in blocked) or "—",
+            "提示": "；".join(m.rule for m in warned) or "—",
+        })
+    df = pd.DataFrame(rows)
+    if missing:
+        df.attrs["missing"] = missing
+    return df
 
 
 def check(codes: list[str], snapshot: pd.DataFrame | None = None,
@@ -336,6 +519,18 @@ def check(codes: list[str], snapshot: pd.DataFrame | None = None,
 
     stats: dict[str, RecentStats] = {}
     hist_failed = 0
+    ledger_cov = None
+    if with_history:
+        # 先问收盘账本。够用就一个请求都不发。
+        market_last = _market_last_trading_day()
+        stats, ledger_cov = stats_from_ledger(list(sub["code"]), market_last)
+        if ledger_cov.can_judge_flow and ledger_cov.n_codes >= len(sub) * 0.9:
+            df = _assemble(sub, cfg, stats, market_last, missing)
+            df.attrs["history_failed"] = 0
+            df.attrs["source"] = "ledger"
+            df.attrs["ledger"] = ledger_cov
+            return df
+        stats = {}
     if with_history:
         # 不能因为"调用方传了快照"就跳过历史。快照只有名称/市值/股价，
         # 停牌和昨日涨停要靠日线才看得出来。此前这两件事被耦合在一起，
@@ -344,22 +539,10 @@ def check(codes: list[str], snapshot: pd.DataFrame | None = None,
         stats, hist_failed = fetch_recent_stats(list(sub["code"]))
     market_last = _market_last_trading_day() if stats else None
 
-    rows = []
-    for _, r in sub.iterrows():
-        mines = check_one(r, cfg, stats.get(r["code"]), market_last)
-        blocked = [m for m in mines if m.hit and m.severity == "block"]
-        warned = [m for m in mines if m.hit and m.severity == "warn"]
-        rows.append({
-            "代码": r["code"], "名称": r.get("name", ""),
-            "结论": "❌ 排除" if blocked else ("⚠ 注意" if warned else "✓ 通过"),
-            "踩雷": "；".join(f"{m.rule}({m.detail})" for m in blocked) or "—",
-            "提示": "；".join(m.rule for m in warned) or "—",
-        })
-
-    df = pd.DataFrame(rows)
-    if missing:
-        df.attrs["missing"] = missing
+    df = _assemble(sub, cfg, stats, market_last, missing)
     df.attrs["history_failed"] = hist_failed
+    df.attrs["source"] = "per_stock" if stats else "snapshot_only"
+    df.attrs["ledger"] = ledger_cov
     return df
 
 
@@ -508,13 +691,41 @@ def cmd_check(codes: list[str]) -> None:
         return
     df = check(codes, with_history=not no_hist)
     print(df.to_string(index=False))
-    if df.attrs.get("missing"):
-        print(f"\n未在快照中找到（可能已退市或代码有误）：{df.attrs['missing']}")
     n_block = int((df["结论"] == "❌ 排除").sum())
     print(f"\n{len(df)} 只中 {n_block} 只应排除。清单之外的票一律不碰。")
-    if df.attrs.get("history_failed"):
-        print(f"注意：{df.attrs['history_failed']} 只没取到历史，"
-              f"它们的涨停/停牌/流动性未检查，✓ 通过含金量要打折。")
+    print(data_provenance(df))
+
+
+def data_provenance(df: "pd.DataFrame") -> str:
+    """这份结论建立在什么数据上 —— 每次都打印，不只在出错时。
+
+    为什么必须每次都打：只在异常时才出现的提示，看多了就是墙纸。
+    把"我凭什么这么说"和结论绑在一起，你才有机会发现它凭的东西不对。
+    """
+    src = df.attrs.get("source")
+    cov = df.attrs.get("ledger")
+    failed = int(df.attrs.get("history_failed", 0) or 0)
+    lines = ["\n—— 数据凭证 ——"]
+
+    if src == "ledger" and cov is not None:
+        lines.append(f"流量类判断来自收盘账本 {cov.last_day}（{cov.days} 个交易日，"
+                     f"本次零联网）")
+        if cov.adv_days < 20:
+            lines.append(f"  ⚠ 账本只有 {cov.adv_days} 天，20 日均额是不足窗口的均值，"
+                         f"流动性红线偏松")
+    elif src == "per_stock":
+        lines.append("流量类判断来自逐只拉取的日线（账本不足，已回退）")
+        lines.append("  建议：每个交易日收盘后跑 `artemis snapshot`，"
+                     "攒满 20 天后 watch 不再需要联网取历史")
+    else:
+        lines.append("⚠ 未取历史 —— 停牌/昨日涨停/流动性/换手四条全部未检")
+        lines.append("  此时的「✓ 通过」只说明名称、市值、股价没问题")
+
+    if failed:
+        lines.append(f"  ⚠ {failed} 只没取到历史，它们的四条流量规则标为未检")
+    if df.attrs.get("missing"):
+        lines.append(f"  未在快照中找到：{df.attrs['missing']}（可能已退市或代码有误）")
+    return "\n".join(lines)
 
 
 def cmd_watch(extra: list[str] | None = None) -> None:
@@ -725,6 +936,10 @@ def fetch_returns_for_journal(
     return out
 
 
+class NoPriceData(RuntimeError):
+    """一条价格都没取到。和"记录还没成熟"必须分开报。"""
+
+
 def journal_outcomes(j: "pd.DataFrame", horizon: int = 20,
                      cache_path: "str | Path | None" = None) -> "pd.DataFrame":
     """把每笔事前承诺对上它之后的实际收益。
@@ -741,6 +956,15 @@ def journal_outcomes(j: "pd.DataFrame", horizon: int = 20,
     prices = fetch_returns_for_journal(
         codes, str(j["date"].min().date()), horizon,
         cache_path=cache_path, need_through=need_through)
+
+    # "一条价格都没取到" 和 "记录还没走满窗口" 是两件完全不同的事。
+    # 混成同一张空表，cmd_review 就会说"再等等" —— 而真相是网络挂了，
+    # 你会白等一个月。
+    if not prices:
+        raise NoPriceData(
+            f"{len(codes)} 只票一条价格都没取到 —— 多半是网络或限频，"
+            f"不是记录还不够老。稍后重跑，或先 `artemis review --no-prices` "
+            f"只看纪律部分。")
 
     rows = []
     for _, r in j.iterrows():
@@ -800,6 +1024,10 @@ def cmd_review(args: list[str] | None = None) -> None:
     print(f"\n对账实际收益（{horizon} 个交易日前瞻）")
     try:
         oc = journal_outcomes(j, horizon)
+    except NoPriceData as e:
+        print(f"  ✗ 取不到价格：{e}")
+        print("  上面的纪律统计不依赖行情，仍然有效。")
+        return
     except RuntimeError as e:
         print(f"  跳过：{e}")
         return
@@ -891,6 +1119,8 @@ def main(argv: list[str] | None = None) -> int | None:
         cmd_log()
     elif cmd == "review":
         cmd_review(argv[1:])
+    elif cmd == "snapshot":
+        cmd_snapshot(argv[1:])
     elif cmd == "audit":
         cmd_audit(argv[1:])
     else:
