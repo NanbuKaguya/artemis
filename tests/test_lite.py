@@ -235,10 +235,17 @@ def _fake_akshare(monkeypatch, drift_map: dict[str, float]):
     fake = types.ModuleType("akshare")
 
     def hist(symbol=None, **kw):
-        rng = np.random.default_rng(abs(hash(symbol)) % 10000)
+        # 种子必须确定。原来用 abs(hash(symbol))，而 Python 的字符串哈希
+        # 每个进程都不一样（PYTHONHASHSEED 随机），于是每次跑用的是不同
+        # 的价格路径。配上 漂移 0.4%/日 vs 波动 1.2%/日 —— 十日漂移 4%，
+        # 十日噪声约 3.8% —— 信号和噪声几乎相等，这条测试大约每六次挂一次。
+        # 它守的是复盘收益的符号约定，不该由掷骰子决定。
+        rng = np.random.default_rng(sum(map(ord, symbol or "x")))
         dates = pd.bdate_range("2026-04-01", "2026-08-20")
         d = drift_map.get(symbol, 0.0)
-        px = 20 * np.cumprod(1 + rng.normal(d, 0.012, len(dates)))
+        # 噪声压到漂移的四分之一，让断言检验的是符号约定而不是运气
+        vol = abs(d) / 4 if d else 0.012
+        px = 20 * np.cumprod(1 + rng.normal(d, vol, len(dates)))
         return pd.DataFrame({"日期": dates.strftime("%Y-%m-%d"), "收盘": px})
 
     fake.stock_zh_a_hist = hist

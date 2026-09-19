@@ -7,12 +7,21 @@ name = "artemis-quant"
 version = "0.6.0"
 description = "A 股 AI 量化投资工作系统 —— 把风险控制排在选股前面"
 requires-python = ">=3.11"
+# 每天真跑的那条路（watch / log / review / audit）只需要这四个。
+# scipy 曾经在这里，但只有 alpha.mining 和 validate.antifit 用它 ——
+# 两个在日常路径上永不加载的模块。为不会跑的代码付安装成本是
+# 实打实的臃肿：装得更久，失败面更大，而收益是零。
 dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",
     "pyarrow>=12.0",
-    "scipy>=1.10",
 ]
+
+[project.optional-dependencies]
+# 因子挖掘与反过拟合验证（结局 C 下不启用）
+research = ["scipy>=1.10"]
+# 真实行情数据源
+data = ["akshare>=1.12.0"]
 
 [project.optional-dependencies]
 # 真实数据源。不进主依赖，因为 Lite 之外的用法才需要

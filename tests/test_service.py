@@ -35,12 +35,76 @@ def run(argv: list[str], cwd: Path | None = None) -> tuple[int, dict]:
 
 
 # ---------------------------------------------------------------- 输出契约
-@pytest.mark.parametrize("cmd", ["health", "session", "review", "help"])
+def _all_commands() -> list[str]:
+    """命令清单从 service.COMMANDS 推导，不手写。
+
+    手写过一次，代价是真金白银：这条测试原本叫"every command"，
+    实际只列了 health/session/review/help 四个 —— screen 不在里面。
+    于是 lite 改了参数名（with_adv20 -> with_history）之后，
+    service.cmd_screen 里那行调用已经是 TypeError，测试却全绿，
+    而 screen 恰恰是 agent 每天都会调的那一个。
+
+    清单一旦手写就会漂移，而漂移出去的那个永远是你最需要的。
+    """
+    from artemis.service import COMMANDS
+
+    return sorted(COMMANDS)
+
+
+@pytest.mark.parametrize("cmd", _all_commands() + ["help"])
 def test_every_command_emits_valid_json(cmd):
-    """agent 会无条件 json.loads()。任何命令吐非 JSON 都是致命的。"""
+    """agent 会无条件 json.loads()。任何命令吐非 JSON 都是致命的。
+
+    这里不校验业务结果 —— 没网、没数据时 ok=False 是对的。
+    只校验：进程不崩、输出是 JSON、信封字段齐全。
+    """
     _, out = run([cmd])
     assert isinstance(out, dict)
     assert "ok" in out and "command" in out and "generated_at" in out
+
+
+def test_screen_actually_reaches_its_call_site(monkeypatch):
+    """反向耦合的守门人 —— 必须真的走到那行调用。
+
+    不跑的代码 import 会跑的代码，共 11 处。改 lite/config/rules 时这些
+    调用点会悄悄失效：它们不在日常路径上，跑不到就不报错。
+
+    第一版守门人是假的：它只跑 `screen`（不带 codes），而 cmd_screen
+    在校验 codes 时就返回了 bad_args，根本到不了 check() 那一行。
+    把网络打桩、把 codes 传进去，才真的执行到调用点 ——
+    参数名对不上会在这里当场 TypeError。
+    """
+    import pandas as pd
+
+    import artemis.lite as L
+    from artemis.service import cmd_screen
+
+    snap = pd.DataFrame([{"code": "600519", "name": "贵州茅台", "price": 1680.0,
+                          "pct_chg": 0.3, "amount": 40e8, "total_mv": 2.1e12,
+                          "float_mv": 2.1e12, "turnover_rate": 0.2}])
+    monkeypatch.setattr(L, "fetch_snapshot", lambda: snap)
+    monkeypatch.setattr(L, "fetch_recent_stats", lambda codes, **kw: ({}, len(codes)))
+    monkeypatch.setattr(L, "_market_last_trading_day",
+                        lambda: pd.Timestamp("2026-09-11"))
+
+    env = cmd_screen({"codes": ["600519"]})      # 参数名错就在这里炸
+    assert env.ok
+    assert env.data["checked"] == 1
+    assert "caveat" in env.data
+
+
+def test_journal_add_reaches_its_call_site(tmp_path, monkeypatch):
+    """同上，守住 service -> review.journal 那条反向依赖。"""
+    monkeypatch.setenv("ARTEMIS_DATA_DIR", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    from artemis.service import cmd_journal_add
+
+    env = cmd_journal_add({
+        "code": "600519", "side": "buy", "size_pct": 0.05, "source": "system",
+        "thesis": "二十个字以上的买入理由写在这里用于通过校验",
+        "invalidation": "跌破二十日线就走",
+    })
+    assert "TypeError" not in str(env.error or "")
 
 
 def test_unknown_command_is_structured_not_crash():
