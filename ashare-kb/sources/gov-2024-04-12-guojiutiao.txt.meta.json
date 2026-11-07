@@ -1,0 +1,11 @@
+{
+  "snapshot": "gov-2024-04-12-guojiutiao.txt",
+  "url": "https://www.gov.cn/zhengce/content/202404/content_6944877.htm",
+  "source": "国务院《关于加强监管防范风险推动资本市场高质量发展的若干意见》",
+  "fetched_at": "2026-11-07T03:33:57+00:00",
+  "content_type": "text/html",
+  "extractor": "html",
+  "raw_sha256": "2f45a02daf392b2d403bde3d40766317da9fde32077321c8ec1be9203a768fe0",
+  "raw_bytes": 42451,
+  "text_chars": 5541
+}

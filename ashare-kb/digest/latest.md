@@ -1,4 +1,4 @@
-# ashare-kb digest — 2026-09-18
+# ashare-kb digest — 2026-11-07
 
 verified **0** · lead 10 · stale 0 · falsified 0
 
@@ -43,7 +43,7 @@ verified **0** · lead 10 · stale 0 · falsified 0
   - 来源：L1 · 待存档：上交所《科创板股票交易特别规定》/投资者适当性管理办法 → sources/
 - **inst-69d8655b** — 新“国九条”于2024年4月12日由国务院印发，并以此为纲形成“1+N”政策体系
   - 推翻条件：找不到国务院原文，或原文的印发日期、文号、“1+N”表述与此不符
-  - 来源：L1 · 待存档：国务院《关于加强监管防范风险推动资本市场高质量发展的若干意见》→ sources/
+  - 来源：L1 · sources/gov-2024-04-12-guojiutiao.txt
 
 ### structural
 
