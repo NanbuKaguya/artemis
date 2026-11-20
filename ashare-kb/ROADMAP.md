@@ -10,7 +10,10 @@
 
 - [ ] 合并 PR，克隆到自己机器
 - [ ] `./kb init` —— 从 `ledger/events.jsonl` 重放，应看到 10 条
-- [ ] `./kb doctor --offline` —— 预期 `12 通过，2 警告，0 失败`
+- [ ] `./kb doctor --offline` —— 预期 `0 失败`。没装 akshare 时是
+      `15 项检查：13 通过，2 警告，0 失败`（两个 WARN 是"akshare 未安装"和
+      "--offline 跳过取数"，都正常）。2026-11-20 实测；这里原先写的
+      "12 通过"是旧数字，检查项后来加过。
 
 **任何 FAIL 都不要往下走。** 那说明库结构有问题，不是环境问题。
 
@@ -139,6 +142,17 @@ T+1 那几组候选短语是照常见写法写的，交易所规则的实际措�
       — 注：这是 `.py` 文件里的字符串，按硬闸不碰。两处 `.md` 里的同一句
         已经改了（那是文档）。第一次试探就给自己开"字符串不算代码"的口子，
         闸就白立了。
+- [ ] **测试套件是红的**：`test_the_three_institutional_scripts_are_bound_and_inconclusive`
+      报 `database is locked`。这是测试自己的缺陷：`tests/test_kb.py` 第 759-760 行
+      `conn_of(kb).execute("DELETE ...")` 和 `conn_of(kb).commit()` 各自开了**一个
+      新连接** —— DELETE 那个连接从没 commit，删除从未生效，写锁要等 GC 才放。
+      后两轮的 `seed_one` 因此报"已在库中"，第三轮的 DELETE 撞上了锁。
+      被测的行为本身是对的：捕获输出里三个脚本都退 2，状态都留在 lead。
+      全量是 `1 failed, 185 passed, 1 skipped`；之前的提交记录写的是全过，
+      当时的 Python 版本没记下来，可能和这次不一样。
+      **闸开之后先修这个**：一个常红的套件会训练人无视红色。
+      — 复现：Python 3.13.18，`python3 -m pytest -q tests/test_kb.py::test_the_three_institutional_scripts_are_bound_and_inconclusive`，两次都稳定复现
+      — 2026-11-20
 
 ## 现实预期
 
