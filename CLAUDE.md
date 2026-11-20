@@ -69,3 +69,5 @@ python3 .claude/hooks/gate.py status      # 判据只实现在这一处
 | `cd ashare-kb && python3 -m pytest tests/ -q` | 测试 |
 
 `kb fetch` / `source` / `verify` / `falsify` 每次都会请用户确认来源 —— 证据边界上的担保人是他。
+所以 `/kb-ingest` 只在交互会话、默认权限模式下做：无头模式会被挡，auto 模式下确认框可能被自动放行。
+**短语命中 ≠ 断言成立**：HOLDS 之后看命中在哪、版本是否现行、之后有没有被改掉（`/kb-ingest` 2.5 节）。
