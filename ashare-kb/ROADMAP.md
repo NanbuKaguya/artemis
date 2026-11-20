@@ -111,7 +111,8 @@ T+1 那几组候选短语是照常见写法写的，交易所规则的实际措�
 
 ## 阶段 4 · 把循环用起来
 
-每次开会话：把 `digest/latest.md` 贴给 Claude。
+每次开会话：Claude Code 的 SessionStart hook（`.claude/settings.json`）会自动把
+doctor 摘要、闸状态和 `digest/latest.md` 注入上下文。用别的客户端就手动贴 digest。
 讨论中 Claude 给判断 → `kb lead` 记下、标 tier。
 会话末 `kb stale`。digest 自动刷新，不用管。
 每隔一阵 `./kb doctor`。
