@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -123,11 +124,62 @@ PROVENANCE = (
     "① 快照的每个字节来自模型之外，且能指着一个机构说「是它发布的」（GitHub 镜像 = L5）；"
     "② --url 是你给的或发布机构的原址；③ 验证脚本真的打开了快照并比对短语，不是一行 print。"
 )
+BOUNDARY = {"fetch", "source", "verify", "falsify"}
+SEPARATORS = {";", "&&", "||", "|", "|&", "&", "(", ")", ";;"}
+REDIRECTS = {">", ">>", ">|", "&>", "&>>"}
+# 词法切分失败时（heredoc 正文里不配对的撇号之类）才用的粗粒度正则：宁可多问
 KB_BOUNDARY = re.compile(r"(?:(?:^|[\s/;&|(])kb|kb_cli)\s+(fetch|source|verify|falsify)\b(?!\s+--list)")
 REDIRECT = re.compile(r"(?<![0-9&])>>?\s*([^\s;&|<>]+)")
-# 改所有参数的（sed -i / perl -i / tee / mv）和只改最后一个参数的（cp）
-WRITE_ALL = re.compile(r"(?:^|[\s;&|(])(?:sed\s+-[a-zA-Z]*i|perl\s+-[a-zA-Z]*i|tee|mv)\b([^;&|]*)")
-WRITE_LAST = re.compile(r"(?:^|[\s;&|(])cp\b([^;&|]*)")
+
+
+def _scan_shell(cmd: str, depth: int = 0) -> tuple[bool, list[str]]:
+    """(是否跨证据边界, 会被写的路径)。按 shell 词法切分 —— 引号里的 > 不是重定向，
+    引号里的 "./kb fetch" 也不是在跑 kb。这是启发式：挡顺手的写法，不挡蓄意的绕法。"""
+    try:
+        lx = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lx.whitespace_split = True
+        toks = list(lx)
+    except ValueError:
+        return bool(KB_BOUNDARY.search(cmd)), REDIRECT.findall(cmd)
+
+    boundary, targets = False, []
+    for i, t in enumerate(toks[:-1]):
+        if t in REDIRECTS:
+            targets.append(toks[i + 1])
+
+    cmds, cur = [], []
+    for t in toks:
+        if t in SEPARATORS:
+            cmds.append(cur)
+            cur = []
+        else:
+            cur.append(t)
+    cmds.append(cur)
+
+    for words in cmds:
+        words = [w for i, w in enumerate(words)
+                 if w not in REDIRECTS and (i == 0 or words[i - 1] not in REDIRECTS)]
+        while words and re.match(r"^[A-Za-z_]\w*=", words[0]):     # FOO=bar cmd
+            words = words[1:]
+        if not words:
+            continue
+        name, args = os.path.basename(words[0]), words[1:]
+        for j, w in enumerate(words[:-1]):                          # ./kb verify / -m kb_cli verify
+            is_kb = (j == 0 and name == "kb") or (w == "kb_cli" and j > 0 and words[j - 1] == "-m")
+            if is_kb and words[j + 1] in BOUNDARY and "--list" not in words:
+                boundary = True
+        plain = [a for a in args if not a.startswith("-")]
+        in_place = name in ("sed", "perl") and any(re.match(r"^-[a-zA-Z]*i|^--in-place", a) for a in args)
+        if name in ("bash", "sh", "zsh") and "-c" in args and depth < 2:
+            k = args.index("-c")
+            if k + 1 < len(args):
+                b, t2 = _scan_shell(args[k + 1], depth + 1)
+                boundary, targets = boundary or b, targets + t2
+        elif in_place or name in ("tee", "mv"):
+            targets += plain
+        elif name == "cp":
+            targets += plain[-1:]
+    return boundary, targets
 
 
 def _decide(kind: str, reason: str) -> None:
@@ -190,14 +242,9 @@ def pretool() -> None:
         return
 
     if tool == "Bash":
-        cmd = inp.get("command", "")
-        if KB_BOUNDARY.search(cmd):
+        boundary, targets = _scan_shell(inp.get("command", ""))
+        if boundary:
             _decide("ask", PROVENANCE)
-        targets = REDIRECT.findall(cmd)
-        for args in WRITE_ALL.findall(cmd):
-            targets += [a for a in args.split() if not a.startswith("-")]
-        for args in WRITE_LAST.findall(cmd):
-            targets += [a for a in args.split() if not a.startswith("-")][-1:]
         _check_paths(targets, cwd, "shell")
 
 

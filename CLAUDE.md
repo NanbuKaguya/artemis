@@ -1,6 +1,7 @@
 # artemis
 
-仓库里只有 `ashare-kb/`：一个存**可验证断言**的A股知识库。
+仓库里有两样东西：`ashare-kb/` 是一个存**可验证断言**的A股知识库，本文件下面全部是关于它的规则；
+`claude-kit/` 是一套通用的 Claude Code 工作系统，和知识库无关，说明见它自己的 README，硬闸不管它。
 会话之间不传记忆 —— **学习的载体是库，模型只是消费者和贡献者。**
 
 ## 开工
@@ -69,3 +70,5 @@ python3 .claude/hooks/gate.py status      # 判据只实现在这一处
 | `cd ashare-kb && python3 -m pytest tests/ -q` | 测试 |
 
 `kb fetch` / `source` / `verify` / `falsify` 每次都会请用户确认来源 —— 证据边界上的担保人是他。
+所以 `/kb-ingest` 只在交互会话、默认权限模式下做：无头模式会被挡，auto 模式下确认框可能被自动放行。
+**短语命中 ≠ 断言成立**：HOLDS 之后看命中在哪、版本是否现行、之后有没有被改掉（`/kb-ingest` 2.5 节）。
