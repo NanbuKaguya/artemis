@@ -16,3 +16,13 @@ cd ashare-kb && ./kb init && ./kb digest
 
 `.claude/` 是给 Claude Code 的工作系统：开工自动注入 digest 和闸状态（hook），
 闸关时改代码要你确认，`sources/` 不许模型直接写，`/kb-ingest` `/kb-lead` `/kb-audit` 三个入口。
+
+## claude-kit
+
+一套通用的 Claude Code 工作系统，任何项目都能用，和知识库无关。
+任务分级、完成要有证据、改了文件自动跑检查、拦危险命令，外加 `/spec` `/ship` `/setup-project` 三个命令。
+见 [`claude-kit/README.md`](claude-kit/README.md)。
+
+```bash
+python3 claude-kit/install.py --dry-run
+```
